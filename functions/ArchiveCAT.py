@@ -20,9 +20,10 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 import pandas as pd
 from whisper_transcriber import WhisperTranscriber
-
-# Import der Audio-Split-Funktionen
 from audio_video_splitter import split_video_audio
+
+script_dir = os.path.dirname(os.path.abspath(__file__))
+assets_dir = os.path.join(script_dir, "assets")
 
 # === Globale Variablen für GIF ===
 gif_frames = []
@@ -343,7 +344,8 @@ root.title("ArchiveCAT - Complex Annotation Tool")
 
 # Fenstericon setzen mit logo.png (muss im selben Verzeichnis liegen)
 try:
-    icon_img = ImageTk.PhotoImage(file="logo.png")
+    icon_path = os.path.join(assets_dir, "logo.png")
+    icon_img = ImageTk.PhotoImage(file=icon_path)
     root.iconphoto(False, icon_img)
 except Exception as e:
     print("Fehler beim Setzen des Icons:", e)
@@ -420,7 +422,8 @@ def start_process():
     # GIF Animation starten
     global gif_frames, gif_running
     try:
-        gif = Image.open("logo.gif")
+        gif_path = os.path.join(assets_dir, "logo.gif")
+        gif = Image.open(gif_path)
         frames = []
         for frame in ImageSequence.Iterator(gif):
             resized_frame = frame.copy().convert("RGBA")
