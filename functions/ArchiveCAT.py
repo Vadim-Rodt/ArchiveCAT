@@ -20,6 +20,9 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 import pandas as pd
 
+# Import der Audio-Split-Funktionen
+from audio_video_splitter import split_video_audio
+
 # === Globale Variablen für GIF ===
 gif_frames = []
 gif_running = False
@@ -186,7 +189,13 @@ def download_video(url, segment_times, delete_source=False, download_dir=DOWNLOA
         os.makedirs(download_dir, exist_ok=True)
         ext = video_link.split('.')[-1]
         filename = f"{title_text}.{ext}"
-        filepath = os.path.join(download_dir, filename)
+        
+        # Erstelle Hauptordner für das Video
+        video_folder = os.path.join(download_dir, title_text)
+        os.makedirs(video_folder, exist_ok=True)
+        
+        # Temporärer Pfad für das vollständige Video
+        temp_filepath = os.path.join(video_folder, f"_temp_{filename}")
 
         # Download mit Fortschrittsanzeige
         with requests.get(video_link, stream=True) as r:
@@ -194,7 +203,7 @@ def download_video(url, segment_times, delete_source=False, download_dir=DOWNLOA
             total_size = int(r.headers.get('content-length', 0))
             downloaded = 0
             
-            with open(filepath, 'wb') as f:
+            with open(temp_filepath, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     if chunk:
                         f.write(chunk)
@@ -207,7 +216,7 @@ def download_video(url, segment_times, delete_source=False, download_dir=DOWNLOA
             queue.put("status:Segmentiere Video...")
 
         global video_duration_seconds
-        actual_duration = get_actual_duration(filepath)
+        actual_duration = get_actual_duration(temp_filepath)
         if actual_duration > 0:
             video_duration_seconds = int(actual_duration)
 
@@ -215,31 +224,67 @@ def download_video(url, segment_times, delete_source=False, download_dir=DOWNLOA
         successful_segments = 0
         total_segments = len(segment_times)
         
-        for i, (start_time, end_time) in enumerate(segment_times, 1):
-            if queue:
-                queue.put(f"status:Erstelle Segment {i}/{total_segments}...")
-                
-            cut_filename = f"{os.path.splitext(filename)[0]} (Segment {i}).{ext}"
-            cut_path = os.path.join(download_dir, cut_filename)
+        # Spezialbehandlung für Gesamtvideo-Download
+        if total_segments == 1 and segment_times[0][0] == "00:00:00" and time_to_seconds(segment_times[0][1]) == video_duration_seconds:
+            # Gesamtes Video - erstelle einen einzelnen Ordner
+            segment_folder = os.path.join(video_folder, "Gesamtvideo")
+            os.makedirs(segment_folder, exist_ok=True)
             
-            if cut_video_segment(filepath, cut_path, start_time, end_time):
-                successful_segments += 1
-            else:
-                print(f"Segment {i} konnte nicht erstellt werden")
-
-        # Nur löschen wenn alle Segmente erfolgreich erstellt wurden
-        if delete_source and successful_segments == total_segments:
-            try:
-                os.remove(filepath)
-                if queue:
-                    queue.put("status:Ursprungsvideo gelöscht")
-                print(f"Ursprungsvideo gelöscht: {filepath}")
-            except Exception as e:
-                print(f"Fehler beim Löschen: {e}")
-        elif delete_source and successful_segments < total_segments:
+            # Verschiebe das Video in den Ordner
+            final_video_path = os.path.join(segment_folder, filename)
+            os.rename(temp_filepath, final_video_path)
+            
             if queue:
-                queue.put("status:Ursprungsvideo behalten (nicht alle Segmente erfolgreich)")
-            print("Ursprungsvideo wird behalten, da nicht alle Segmente erfolgreich erstellt wurden")
+                queue.put("status:Extrahiere Audio...")
+            
+            # Audio extrahieren
+            result = split_video_audio(final_video_path, output_dir=segment_folder, keep_original=True)
+            
+            if result['success']:
+                successful_segments = 1
+                if queue:
+                    queue.put("status:Audio erfolgreich extrahiert")
+            else:
+                print(f"Fehler bei Audio-Extraktion: {result['errors']}")
+                if queue:
+                    queue.put("status:Audio-Extraktion fehlgeschlagen")
+        else:
+            # Normale Segmentierung
+            for i, (start_time, end_time) in enumerate(segment_times, 1):
+                if queue:
+                    queue.put(f"status:Erstelle Segment {i}/{total_segments}...")
+                
+                # Erstelle Unterordner für jedes Segment
+                segment_folder = os.path.join(video_folder, f"Segment_{i}")
+                os.makedirs(segment_folder, exist_ok=True)
+                
+                # Segment-Dateiname ohne Ordner-Prefix
+                segment_filename = f"{title_text}_Segment_{i}.{ext}"
+                segment_path = os.path.join(segment_folder, segment_filename)
+                
+                if cut_video_segment(temp_filepath, segment_path, start_time, end_time):
+                    if queue:
+                        queue.put(f"status:Extrahiere Audio für Segment {i}...")
+                    
+                    # Audio aus Segment extrahieren
+                    result = split_video_audio(segment_path, output_dir=segment_folder, keep_original=True)
+                    
+                    if result['success']:
+                        successful_segments += 1
+                        if queue:
+                            queue.put(f"status:Segment {i} mit Audio erfolgreich erstellt")
+                    else:
+                        print(f"Fehler bei Audio-Extraktion für Segment {i}: {result['errors']}")
+                        # Segment trotzdem als erfolgreich zählen, wenn Video erstellt wurde
+                        successful_segments += 1
+                else:
+                    print(f"Segment {i} konnte nicht erstellt werden")
+            
+            # Temporäre Datei löschen
+            try:
+                os.remove(temp_filepath)
+            except Exception as e:
+                print(f"Fehler beim Löschen der temporären Datei: {e}")
 
         if queue:
             queue.put(f"status:Fertig! {successful_segments}/{total_segments} Segmente erstellt")
@@ -380,7 +425,7 @@ def check_queue(queue):
                 gif_label.grid_remove()
                 status_label.config(text="Fertig!", fg="#00ff00")
                 download_btn.config(state="normal")
-                messagebox.showinfo("Fertig", "Video heruntergeladen und alle Segmente geschnitten.")
+                messagebox.showinfo("Fertig", "Video heruntergeladen, segmentiert und Audio extrahiert.")
                 return
             elif isinstance(result, str) and result.startswith("error"):
                 gif_running = False
