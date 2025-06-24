@@ -18,6 +18,8 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
+from modern_style import apply_modern_style
+
 import pandas as pd
 
 # Import der Audio-Split-Funktionen
@@ -404,6 +406,7 @@ def get_video_duration_from_meta(url):
 
 # --- GUI SETUP ---
 root = tk.Tk()
+apply_modern_style(root)
 root.title("ArchiveCAT - Complex Annotation Tool")
 
 # Fenstericon setzen mit logo.png (muss im selben Verzeichnis liegen)
