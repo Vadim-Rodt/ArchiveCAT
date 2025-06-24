@@ -19,18 +19,13 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 import pandas as pd
-from whisper_transcriber import WhisperTranscriber
-from audio_video_splitter import split_video_audio
 
-script_dir = os.path.dirname(os.path.abspath(__file__))
-assets_dir = os.path.join(script_dir, "assets")
+# Import der Audio-Split-Funktionen
+from audio_video_splitter import split_video_audio
 
 # === Globale Variablen für GIF ===
 gif_frames = []
 gif_running = False
-OPENAI_API_KEY = None  # Wird über GUI gesetzt
-transcriber = None
-transcribe_enabled = False
 
 # === EINSTELLUNGEN ===
 DOWNLOAD_DIR = r"C:\Users\rodtv\OneDrive\Desktop\Desktop\ArchiveCAT\data\videos"
@@ -120,10 +115,100 @@ def threaded_download(url, segment_times, delete_source, queue):
     except Exception as e:
         queue.put(f"error:{str(e)}")
 
+def process_local_file(file_path, segment_times, delete_source, queue):
+    """Verarbeitet lokale Video-Datei ähnlich wie Download"""
+    try:
+        # Extrahiere Dateiname ohne Pfad
+        filename = os.path.basename(file_path)
+        title_text = sanitize_filename(os.path.splitext(filename)[0])
+        ext = os.path.splitext(filename)[1][1:]  # Erweiterung ohne Punkt
+        
+        # Erstelle Hauptordner für das Video
+        video_folder = os.path.join(DOWNLOAD_DIR, title_text)
+        os.makedirs(video_folder, exist_ok=True)
+        
+        if queue:
+            queue.put("status:Verarbeite lokale Datei...")
+        
+        # Segmentierung
+        successful_segments = 0
+        total_segments = len(segment_times)
+        
+        # Spezialbehandlung für Gesamtvideo
+        if total_segments == 1 and segment_times[0][0] == "00:00:00" and time_to_seconds(segment_times[0][1]) == video_duration_seconds:
+            # Gesamtes Video - erstelle einen einzelnen Ordner
+            segment_folder = os.path.join(video_folder, "Gesamtvideo")
+            os.makedirs(segment_folder, exist_ok=True)
+            
+            # Kopiere das Video in den Ordner
+            import shutil
+            final_video_path = os.path.join(segment_folder, filename)
+            
+            if queue:
+                queue.put("status:Kopiere Video...")
+            
+            shutil.copy2(file_path, final_video_path)
+            
+            if queue:
+                queue.put("status:Extrahiere Audio...")
+            
+            # Audio extrahieren
+            result = split_video_audio(final_video_path, output_dir=segment_folder, keep_original=True)
+            
+            if result['success']:
+                successful_segments = 1
+                if queue:
+                    queue.put("status:Audio erfolgreich extrahiert")
+            else:
+                print(f"Fehler bei Audio-Extraktion: {result['errors']}")
+                if queue:
+                    queue.put("status:Audio-Extraktion fehlgeschlagen")
+        else:
+            # Normale Segmentierung
+            for i, (start_time, end_time) in enumerate(segment_times, 1):
+                if queue:
+                    queue.put(f"status:Erstelle Segment {i}/{total_segments}...")
+                
+                # Erstelle Unterordner für jedes Segment
+                segment_folder = os.path.join(video_folder, f"Segment_{i}")
+                os.makedirs(segment_folder, exist_ok=True)
+                
+                # Segment-Dateiname
+                segment_filename = f"{title_text}_Segment_{i}.{ext}"
+                segment_path = os.path.join(segment_folder, segment_filename)
+                
+                if cut_video_segment(file_path, segment_path, start_time, end_time):
+                    if queue:
+                        queue.put(f"status:Extrahiere Audio für Segment {i}...")
+                    
+                    # Audio aus Segment extrahieren
+                    result = split_video_audio(segment_path, output_dir=segment_folder, keep_original=True)
+                    
+                    if result['success']:
+                        successful_segments += 1
+                        if queue:
+                            queue.put(f"status:Segment {i} mit Audio erfolgreich erstellt")
+                    else:
+                        print(f"Fehler bei Audio-Extraktion für Segment {i}: {result['errors']}")
+                        successful_segments += 1
+                else:
+                    print(f"Segment {i} konnte nicht erstellt werden")
+        
+        if queue:
+            queue.put(f"status:Fertig! {successful_segments}/{total_segments} Segmente erstellt")
+        
+        if successful_segments == total_segments:
+            queue.put("done")
+        else:
+            queue.put("error:Nicht alle Segmente konnten erstellt werden")
+            
+    except Exception as e:
+        queue.put(f"error:{str(e)}")
+
 def download_video(url, segment_times, delete_source=False, download_dir=DOWNLOAD_DIR, queue=None):
     chrome_options = Options()
     chrome_options.add_argument('--headless')
-    chrome_options.add_argument('--window-size=1112,802')
+    chrome_options.add_argument('--window-size=1920,1080')
     chrome_options.add_experimental_option("excludeSwitches", ["enable-logging"])
     chrome_options.add_argument('--log-level=3')
 
@@ -225,27 +310,6 @@ def download_video(url, segment_times, delete_source=False, download_dir=DOWNLOA
         if actual_duration > 0:
             video_duration_seconds = int(actual_duration)
 
-        
-        # Transkription wenn aktiviert
-        if transcribe_enabled and transcriber and successful_segments > 0:
-            if queue:
-                queue.put("status:Starte Transkription...")
-            
-            try:
-                transcription_results = transcriber.transcribe_video_segments(
-                    video_folder, 
-                    language=transcription_language.get()
-                )
-                
-                successful_transcriptions = sum(1 for r in transcription_results.values() if r['success'])
-                
-                if queue:
-                    queue.put(f"status:Transkription abgeschlossen: {successful_transcriptions}/{len(transcription_results)} erfolgreich")
-                
-            except Exception as e:
-                print(f"Transkriptionsfehler: {e}")
-                if queue:
-                    queue.put("status:Transkription fehlgeschlagen")
         # Segmentierung mit verbesserter Fehlerbehandlung
         successful_segments = 0
         total_segments = len(segment_times)
@@ -344,8 +408,7 @@ root.title("ArchiveCAT - Complex Annotation Tool")
 
 # Fenstericon setzen mit logo.png (muss im selben Verzeichnis liegen)
 try:
-    icon_path = os.path.join(assets_dir, "logo.png")
-    icon_img = ImageTk.PhotoImage(file=icon_path)
+    icon_img = ImageTk.PhotoImage(file="logo.png")
     root.iconphoto(False, icon_img)
 except Exception as e:
     print("Fehler beim Setzen des Icons:", e)
@@ -378,33 +441,39 @@ vcmd = (root.register(validate_time_input), '%S')
 def toggle_segment_ui():
     if download_full_var.get():
         segment_dropdown.configure(state="disabled")
-        delete_checkbox.grid_remove()
         segment_frame.grid_remove()
-        download_btn.config(text="Download")
     else:
         segment_dropdown.configure(state="readonly")
-        delete_checkbox.grid()
         segment_frame.grid()
-        download_btn.config(text="Download & Schneiden")
+    update_button_text()
 
 def start_process():
     global video_duration_seconds, gif_frames
-    url = url_entry.get().strip()
-
-    if not url:
-        messagebox.showerror("Fehler", "Bitte eine URL angeben.")
-        return
+    
+    # Prüfe ob URL oder lokale Datei
+    if source_type_var.get() == "url":
+        url = url_entry.get().strip()
+        if not url:
+            messagebox.showerror("Fehler", "Bitte eine URL angeben.")
+            return
+        local_file = None
+    else:
+        local_file = local_file_path.get()
+        if not local_file or not os.path.exists(local_file):
+            messagebox.showerror("Fehler", "Bitte eine gültige Datei auswählen.")
+            return
+        url = None
 
     segment_times = []
     if download_full_var.get():
         if not video_duration_seconds:
-            messagebox.showerror("Fehler", "Bitte zuerst URL bestätigen.")
+            messagebox.showerror("Fehler", "Bitte zuerst URL/Datei bestätigen.")
             return
         segment_times = [("00:00:00", seconds_to_time(video_duration_seconds))]
     else:
         segment_count = int(segment_count_var.get())
         if not video_duration_seconds:
-            messagebox.showerror("Fehler", "Bitte zuerst URL bestätigen.")
+            messagebox.showerror("Fehler", "Bitte zuerst URL/Datei bestätigen.")
             return
         for i in range(segment_count):
             start = segment_entries[i][0].get().strip()
@@ -422,8 +491,7 @@ def start_process():
     # GIF Animation starten
     global gif_frames, gif_running
     try:
-        gif_path = os.path.join(assets_dir, "logo.gif")
-        gif = Image.open(gif_path)
+        gif = Image.open("logo.gif")
         frames = []
         for frame in ImageSequence.Iterator(gif):
             resized_frame = frame.copy().convert("RGBA")
@@ -438,10 +506,17 @@ def start_process():
     except Exception as e:
         print("GIF-Fehler:", e)
 
-    # Download starten
+    # Download oder lokale Verarbeitung starten
     queue = Queue()
     download_btn.config(state="disabled")
-    threading.Thread(target=threaded_download, args=(url, segment_times, delete_source, queue), daemon=True).start()
+    
+    if local_file:
+        # Lokale Datei verarbeiten
+        threading.Thread(target=process_local_file, args=(local_file, segment_times, delete_source, queue), daemon=True).start()
+    else:
+        # URL Download
+        threading.Thread(target=threaded_download, args=(url, segment_times, delete_source, queue), daemon=True).start()
+    
     check_queue(queue)
 
 def check_queue(queue):
@@ -522,161 +597,170 @@ status_label.grid(row=0, column=0, columnspan=4, pady=(5, 0))
 duration_label = tk.Label(root, text="Videolänge: unbekannt", fg=label_fg, bg="#2b2b2b", font=font_style)
 duration_label.grid(row=1, column=0, columnspan=4, pady=(5, 0))
 
+# Lokale Datei oder URL Auswahl
+source_frame = tk.Frame(root, bg="#2b2b2b")
+source_frame.grid(row=2, column=0, columnspan=4, pady=10)
+
+source_type_var = tk.StringVar(value="url")
+local_file_path = tk.StringVar()
+
+def toggle_source_type():
+    if source_type_var.get() == "url":
+        url_entry.configure(state="normal")
+        confirm_button.configure(state="normal")
+        browse_button.configure(state="disabled")
+        file_label.configure(text="Keine Datei ausgewählt")
+        local_file_path.set("")
+    else:
+        url_entry.configure(state="disabled")
+        confirm_button.configure(state="disabled")
+        browse_button.configure(state="normal")
+        url_entry.delete(0, tk.END)
+    update_button_text()
+
+tk.Radiobutton(source_frame, text="URL", variable=source_type_var, value="url", 
+               command=toggle_source_type, fg=label_fg, bg="#2b2b2b", 
+               selectcolor="#2b2b2b", font=font_style).grid(row=0, column=0, padx=10)
+
+tk.Radiobutton(source_frame, text="Lokale Datei", variable=source_type_var, value="local", 
+               command=toggle_source_type, fg=label_fg, bg="#2b2b2b", 
+               selectcolor="#2b2b2b", font=font_style).grid(row=0, column=1, padx=10)
+
+# URL Eingabe
+url_frame = tk.Frame(root, bg="#2b2b2b")
+url_frame.grid(row=3, column=0, columnspan=4, pady=5)
+
 def validate_url_input(P):
     return len(P) <= 2000
 
 url_vcmd = (root.register(validate_url_input), '%P')
 
-tk.Label(root, text="Video-URL:", fg=label_fg, bg="#2b2b2b", font=font_style).grid(row=2, column=0, sticky="e", padx=20, pady=10)
-url_entry = tk.Entry(root, width=45, bg=entry_bg, fg=entry_fg, insertbackground="white", validate="key", validatecommand=url_vcmd)
-url_entry.grid(row=2, column=1, padx=5)
-confirm_button = ttk.Button(root, text="URL bestätigen", command=confirm_url)
-confirm_button.grid(row=2, column=2, padx=5)
+tk.Label(url_frame, text="Video-URL:", fg=label_fg, bg="#2b2b2b", font=font_style).grid(row=0, column=0, sticky="e", padx=20)
+url_entry = tk.Entry(url_frame, width=45, bg=entry_bg, fg=entry_fg, insertbackground="white", validate="key", validatecommand=url_vcmd)
+url_entry.grid(row=0, column=1, padx=5)
+confirm_button = ttk.Button(url_frame, text="URL bestätigen", command=confirm_url)
+confirm_button.grid(row=0, column=2, padx=5)
+
+# Lokale Datei Auswahl
+file_frame = tk.Frame(root, bg="#2b2b2b")
+file_frame.grid(row=4, column=0, columnspan=4, pady=5)
+
+def browse_file():
+    filename = filedialog.askopenfilename(
+        title="Video-Datei auswählen",
+        filetypes=[
+            ("Video-Dateien", "*.mp4 *.avi *.mkv *.mov *.wmv *.flv *.webm *.m4v *.mpg *.mpeg *.3gp"),
+            ("Alle Dateien", "*.*")
+        ]
+    )
+    if filename:
+        local_file_path.set(filename)
+        file_label.configure(text=os.path.basename(filename))
+        # Automatisch Videolänge ermitteln
+        confirm_local_file()
+
+def confirm_local_file():
+    global video_duration_seconds
+    file_path = local_file_path.get()
+    if file_path and os.path.exists(file_path):
+        status_label.config(text="Ermittle Videolänge...", fg="#ffff00")
+        duration = get_actual_duration(file_path)
+        if duration > 0:
+            video_duration_seconds = int(duration)
+            formatted_time = seconds_to_time(video_duration_seconds)
+            duration_label.config(text=f"Videolänge: {formatted_time}")
+            status_label.config(text="Lokale Datei bestätigt", fg="#00ff00")
+            
+            # Update segment fields
+            update_segment_fields()
+            for start_entry, end_entry in segment_entries:
+                start_entry.configure(validate="none")
+                end_entry.configure(validate="none")
+                start_entry.delete(0, tk.END)
+                start_entry.insert(0, "00:00:00")
+                end_entry.delete(0, tk.END)
+                end_entry.insert(0, formatted_time)
+                start_entry.configure(validate="key", validatecommand=vcmd)
+                end_entry.configure(validate="key", validatecommand=vcmd)
+        else:
+            video_duration_seconds = None
+            duration_label.config(text="Videolänge: nicht ermittelbar")
+            status_label.config(text="Fehler beim Lesen der Datei", fg="#ff0000")
+
+tk.Label(file_frame, text="Lokale Datei:", fg=label_fg, bg="#2b2b2b", font=font_style).grid(row=0, column=0, sticky="e", padx=20)
+browse_button = ttk.Button(file_frame, text="Durchsuchen", command=browse_file, state="disabled")
+browse_button.grid(row=0, column=1, padx=5)
+file_label = tk.Label(file_frame, text="Keine Datei ausgewählt", fg=label_fg, bg="#2b2b2b", font=font_style)
+file_label.grid(row=0, column=2, padx=10)
+
+# Info-Box für unterstützte Formate
+info_frame = tk.Frame(file_frame, bg="#3c3f41", relief="ridge", borderwidth=1)
+info_frame.grid(row=0, column=3, padx=10)
+info_label = tk.Label(info_frame, text="ℹ", fg="#00aaff", bg="#3c3f41", font=("Segoe UI", 12, "bold"), cursor="hand2")
+info_label.pack(padx=5, pady=2)
+
+def show_format_info(event):
+    messagebox.showinfo(
+        "Unterstützte Videoformate",
+        "Kompatible Formate:\n\n"
+        "• MP4 (.mp4) - Empfohlen\n"
+        "• AVI (.avi)\n"
+        "• MKV (.mkv)\n"
+        "• MOV (.mov)\n"
+        "• WMV (.wmv)\n"
+        "• FLV (.flv)\n"
+        "• WebM (.webm)\n"
+        "• M4V (.m4v)\n"
+        "• MPG/MPEG (.mpg, .mpeg)\n"
+        "• 3GP (.3gp)\n\n"
+        "Hinweis: Die Datei muss lokal verfügbar sein.\n"
+        "Maximale Dateigröße: Abhängig vom verfügbaren Speicher."
+    )
+
+info_label.bind("<Button-1>", show_format_info)
 
 # Gesamtes Video Checkbox
 download_full_checkbox = tk.Checkbutton(root, text="Gesamtes Video herunterladen", variable=download_full_var, command=toggle_segment_ui,
                                         fg=label_fg, bg="#2b2b2b", font=font_style, selectcolor="#2b2b2b", activebackground="#2b2b2b")
-download_full_checkbox.grid(row=3, column=0, columnspan=3, sticky="w", padx=20)
+download_full_checkbox.grid(row=5, column=0, columnspan=3, sticky="w", padx=20)
 
 # Segmentanzahl und Checkbox
-tk.Label(root, text="Anzahl Segmente (1–5):", fg=label_fg, bg="#2b2b2b", font=font_style).grid(row=4, column=0, sticky="e", padx=20)
+tk.Label(root, text="Anzahl Segmente (1–5):", fg=label_fg, bg="#2b2b2b", font=font_style).grid(row=6, column=0, sticky="e", padx=20)
 segment_count_var = tk.StringVar(value="1")
 segment_dropdown = ttk.Combobox(root, textvariable=segment_count_var, values=["1", "2", "3", "4", "5"], width=5)
-segment_dropdown.grid(row=4, column=1, sticky="w", padx=(0, 20))
+segment_dropdown.grid(row=6, column=1, sticky="w", padx=(0, 20))
 segment_dropdown.bind("<<ComboboxSelected>>", lambda e: update_segment_fields())
 
 delete_source_var = tk.BooleanVar()
-delete_checkbox = tk.Checkbutton(root, text="Quellvideo nach Segmentierung löschen?", variable=delete_source_var,
-                                  fg=label_fg, bg="#2b2b2b", font=font_style, selectcolor="#2b2b2b", activebackground="#2b2b2b")
-delete_checkbox.grid(row=4, column=2, columnspan=2, sticky="w")
-
-transcription_frame = tk.LabelFrame(root, text="Audio-Transkription (OpenAI Whisper)", 
-                                   fg=label_fg, bg="#2b2b2b", font=font_style)
-transcription_frame.grid(row=7, column=0, columnspan=4, padx=20, pady=10, sticky="ew")
-
-# Aktivierungs-Checkbox
-transcribe_var = tk.BooleanVar()
-def toggle_transcription():
-    global transcribe_enabled
-    transcribe_enabled = transcribe_var.get()
-    if transcribe_enabled:
-        api_key_entry.configure(state="normal")
-        language_dropdown.configure(state="readonly")
-        save_api_btn.configure(state="normal")
-    else:
-        api_key_entry.configure(state="disabled")
-        language_dropdown.configure(state="disabled")
-        save_api_btn.configure(state="disabled")
-
-transcribe_checkbox = tk.Checkbutton(
-    transcription_frame, 
-    text="Audio automatisch transkribieren", 
-    variable=transcribe_var,
-    command=toggle_transcription,
-    fg=label_fg, bg="#2b2b2b", font=font_style, 
-    selectcolor="#2b2b2b", activebackground="#2b2b2b"
-)
-transcribe_checkbox.grid(row=0, column=0, columnspan=3, sticky="w", padx=10, pady=5)
-
-# API Key Eingabe
-tk.Label(transcription_frame, text="OpenAI API Key:", fg=label_fg, bg="#2b2b2b", 
-         font=font_style).grid(row=1, column=0, sticky="e", padx=10)
-
-api_key_var = tk.StringVar()
-api_key_entry = tk.Entry(transcription_frame, textvariable=api_key_var, width=40, 
-                        bg=entry_bg, fg=entry_fg, insertbackground="white", show="*")
-api_key_entry.grid(row=1, column=1, padx=5, pady=5)
-
-def save_api_key():
-    global OPENAI_API_KEY, transcriber
-    key = api_key_var.get().strip()
-    if key:
-        OPENAI_API_KEY = key
-        try:
-            transcriber = WhisperTranscriber(OPENAI_API_KEY)
-            api_status_label.config(text="✓ API Key gespeichert", fg="#00ff00")
-            # Optional: Speichere Key in Datei für nächsten Start
-            with open('.api_key', 'w') as f:
-                f.write(key)
-        except Exception as e:
-            api_status_label.config(text="✗ Ungültiger Key", fg="#ff0000")
-            transcriber = None
-    else:
-        api_status_label.config(text="✗ Kein Key eingegeben", fg="#ff0000")
-
-save_api_btn = ttk.Button(transcription_frame, text="Speichern", command=save_api_key)
-save_api_btn.grid(row=1, column=2, padx=5)
-
-api_status_label = tk.Label(transcription_frame, text="", fg=label_fg, bg="#2b2b2b", font=font_style)
-api_status_label.grid(row=1, column=3, padx=5)
-
-# Sprach-Auswahl
-tk.Label(transcription_frame, text="Sprache:", fg=label_fg, bg="#2b2b2b", 
-         font=font_style).grid(row=2, column=0, sticky="e", padx=10)
-
-transcription_language = tk.StringVar(value="de")
-language_dropdown = ttk.Combobox(
-    transcription_frame, 
-    textvariable=transcription_language, 
-    values=["de", "en", "es", "fr", "it", "pt", "nl", "pl", "ru", "zh", "ja", "ko"],
-    width=10,
-    state="readonly"
-)
-language_dropdown.grid(row=2, column=1, sticky="w", padx=5, pady=5)
-
-language_labels = {
-    "de": "Deutsch", "en": "English", "es": "Español", "fr": "Français",
-    "it": "Italiano", "pt": "Português", "nl": "Nederlands", "pl": "Polski",
-    "ru": "Русский", "zh": "中文", "ja": "日本語", "ko": "한국어"
-}
-
-def update_language_label(event=None):
-    lang_code = transcription_language.get()
-    lang_name = language_labels.get(lang_code, lang_code)
-    language_info_label.config(text=f"({lang_name})")
-
-language_dropdown.bind("<<ComboboxSelected>>", update_language_label)
-
-language_info_label = tk.Label(transcription_frame, text="(Deutsch)", fg=label_fg, 
-                              bg="#2b2b2b", font=font_style)
-language_info_label.grid(row=2, column=2, sticky="w")
-
-# Initialer Zustand
-api_key_entry.configure(state="disabled")
-language_dropdown.configure(state="disabled")
-save_api_btn.configure(state="disabled")
-
-# Lade gespeicherten API Key beim Start
-try:
-    with open('.api_key', 'r') as f:
-        saved_key = f.read().strip()
-        if saved_key:
-            api_key_var.set(saved_key)
-            save_api_key()
-except FileNotFoundError:
-    pass
 
 segment_frame = tk.Frame(root, bg="#2b2b2b")
-segment_frame.grid(row=5, column=0, columnspan=4, pady=10)
+segment_frame.grid(row=7, column=0, columnspan=4, pady=10)
 update_segment_fields()
 
 button_frame = tk.Frame(root, bg="#2b2b2b")
 button_frame.grid(row=8, column=0, columnspan=4)
 
+# Button Text initial setzen
 download_btn = ttk.Button(button_frame, text="Download & Schneiden", command=start_process)
 download_btn.grid(row=0, column=0, padx=(20, 10), pady=20)
+
+# Update Button Text bei Source-Änderung
+def update_button_text():
+    if download_full_var.get():
+        if source_type_var.get() == "url":
+            download_btn.config(text="Download")
+        else:
+            download_btn.config(text="Verarbeiten")
+    else:
+        if source_type_var.get() == "url":
+            download_btn.config(text="Download & Schneiden")
+        else:
+            download_btn.config(text="Verarbeiten & Schneiden")
 
 gif_label = tk.Label(button_frame, bg="#2b2b2b")
 gif_label.grid(row=0, column=1, padx=10)
 gif_label.grid_remove()
 
-# Optional: Füge einen Info-Text hinzu
-info_text = tk.Label(
-    transcription_frame, 
-    text="Hinweis: Die Transkription erfolgt nach dem Download und kann einige Minuten dauern.\nKosten: ~$0.006 pro Minute Audio",
-    fg="#888888", bg="#2b2b2b", font=("Segoe UI", 8), justify="left"
-)
-info_text.grid(row=3, column=0, columnspan=4, padx=10, pady=(5, 10), sticky="w")
 toggle_segment_ui()
 
 root.mainloop()
