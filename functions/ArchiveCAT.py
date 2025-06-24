@@ -19,6 +19,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 import pandas as pd
+from whisper_transcriber import WhisperTranscriber
 
 # Import der Audio-Split-Funktionen
 from audio_video_splitter import split_video_audio
@@ -26,6 +27,9 @@ from audio_video_splitter import split_video_audio
 # === Globale Variablen für GIF ===
 gif_frames = []
 gif_running = False
+OPENAI_API_KEY = None  # Wird über GUI gesetzt
+transcriber = None
+transcribe_enabled = False
 
 # === EINSTELLUNGEN ===
 DOWNLOAD_DIR = r"C:\Users\rodtv\OneDrive\Desktop\Desktop\ArchiveCAT\data\videos"
@@ -118,7 +122,7 @@ def threaded_download(url, segment_times, delete_source, queue):
 def download_video(url, segment_times, delete_source=False, download_dir=DOWNLOAD_DIR, queue=None):
     chrome_options = Options()
     chrome_options.add_argument('--headless')
-    chrome_options.add_argument('--window-size=1920,1080')
+    chrome_options.add_argument('--window-size=1112,802')
     chrome_options.add_experimental_option("excludeSwitches", ["enable-logging"])
     chrome_options.add_argument('--log-level=3')
 
@@ -220,6 +224,27 @@ def download_video(url, segment_times, delete_source=False, download_dir=DOWNLOA
         if actual_duration > 0:
             video_duration_seconds = int(actual_duration)
 
+        
+        # Transkription wenn aktiviert
+        if transcribe_enabled and transcriber and successful_segments > 0:
+            if queue:
+                queue.put("status:Starte Transkription...")
+            
+            try:
+                transcription_results = transcriber.transcribe_video_segments(
+                    video_folder, 
+                    language=transcription_language.get()
+                )
+                
+                successful_transcriptions = sum(1 for r in transcription_results.values() if r['success'])
+                
+                if queue:
+                    queue.put(f"status:Transkription abgeschlossen: {successful_transcriptions}/{len(transcription_results)} erfolgreich")
+                
+            except Exception as e:
+                print(f"Transkriptionsfehler: {e}")
+                if queue:
+                    queue.put("status:Transkription fehlgeschlagen")
         # Segmentierung mit verbesserter Fehlerbehandlung
         successful_segments = 0
         total_segments = len(segment_times)
@@ -522,12 +547,118 @@ delete_checkbox = tk.Checkbutton(root, text="Quellvideo nach Segmentierung lösc
                                   fg=label_fg, bg="#2b2b2b", font=font_style, selectcolor="#2b2b2b", activebackground="#2b2b2b")
 delete_checkbox.grid(row=4, column=2, columnspan=2, sticky="w")
 
+transcription_frame = tk.LabelFrame(root, text="Audio-Transkription (OpenAI Whisper)", 
+                                   fg=label_fg, bg="#2b2b2b", font=font_style)
+transcription_frame.grid(row=7, column=0, columnspan=4, padx=20, pady=10, sticky="ew")
+
+# Aktivierungs-Checkbox
+transcribe_var = tk.BooleanVar()
+def toggle_transcription():
+    global transcribe_enabled
+    transcribe_enabled = transcribe_var.get()
+    if transcribe_enabled:
+        api_key_entry.configure(state="normal")
+        language_dropdown.configure(state="readonly")
+        save_api_btn.configure(state="normal")
+    else:
+        api_key_entry.configure(state="disabled")
+        language_dropdown.configure(state="disabled")
+        save_api_btn.configure(state="disabled")
+
+transcribe_checkbox = tk.Checkbutton(
+    transcription_frame, 
+    text="Audio automatisch transkribieren", 
+    variable=transcribe_var,
+    command=toggle_transcription,
+    fg=label_fg, bg="#2b2b2b", font=font_style, 
+    selectcolor="#2b2b2b", activebackground="#2b2b2b"
+)
+transcribe_checkbox.grid(row=0, column=0, columnspan=3, sticky="w", padx=10, pady=5)
+
+# API Key Eingabe
+tk.Label(transcription_frame, text="OpenAI API Key:", fg=label_fg, bg="#2b2b2b", 
+         font=font_style).grid(row=1, column=0, sticky="e", padx=10)
+
+api_key_var = tk.StringVar()
+api_key_entry = tk.Entry(transcription_frame, textvariable=api_key_var, width=40, 
+                        bg=entry_bg, fg=entry_fg, insertbackground="white", show="*")
+api_key_entry.grid(row=1, column=1, padx=5, pady=5)
+
+def save_api_key():
+    global OPENAI_API_KEY, transcriber
+    key = api_key_var.get().strip()
+    if key:
+        OPENAI_API_KEY = key
+        try:
+            transcriber = WhisperTranscriber(OPENAI_API_KEY)
+            api_status_label.config(text="✓ API Key gespeichert", fg="#00ff00")
+            # Optional: Speichere Key in Datei für nächsten Start
+            with open('.api_key', 'w') as f:
+                f.write(key)
+        except Exception as e:
+            api_status_label.config(text="✗ Ungültiger Key", fg="#ff0000")
+            transcriber = None
+    else:
+        api_status_label.config(text="✗ Kein Key eingegeben", fg="#ff0000")
+
+save_api_btn = ttk.Button(transcription_frame, text="Speichern", command=save_api_key)
+save_api_btn.grid(row=1, column=2, padx=5)
+
+api_status_label = tk.Label(transcription_frame, text="", fg=label_fg, bg="#2b2b2b", font=font_style)
+api_status_label.grid(row=1, column=3, padx=5)
+
+# Sprach-Auswahl
+tk.Label(transcription_frame, text="Sprache:", fg=label_fg, bg="#2b2b2b", 
+         font=font_style).grid(row=2, column=0, sticky="e", padx=10)
+
+transcription_language = tk.StringVar(value="de")
+language_dropdown = ttk.Combobox(
+    transcription_frame, 
+    textvariable=transcription_language, 
+    values=["de", "en", "es", "fr", "it", "pt", "nl", "pl", "ru", "zh", "ja", "ko"],
+    width=10,
+    state="readonly"
+)
+language_dropdown.grid(row=2, column=1, sticky="w", padx=5, pady=5)
+
+language_labels = {
+    "de": "Deutsch", "en": "English", "es": "Español", "fr": "Français",
+    "it": "Italiano", "pt": "Português", "nl": "Nederlands", "pl": "Polski",
+    "ru": "Русский", "zh": "中文", "ja": "日本語", "ko": "한국어"
+}
+
+def update_language_label(event=None):
+    lang_code = transcription_language.get()
+    lang_name = language_labels.get(lang_code, lang_code)
+    language_info_label.config(text=f"({lang_name})")
+
+language_dropdown.bind("<<ComboboxSelected>>", update_language_label)
+
+language_info_label = tk.Label(transcription_frame, text="(Deutsch)", fg=label_fg, 
+                              bg="#2b2b2b", font=font_style)
+language_info_label.grid(row=2, column=2, sticky="w")
+
+# Initialer Zustand
+api_key_entry.configure(state="disabled")
+language_dropdown.configure(state="disabled")
+save_api_btn.configure(state="disabled")
+
+# Lade gespeicherten API Key beim Start
+try:
+    with open('.api_key', 'r') as f:
+        saved_key = f.read().strip()
+        if saved_key:
+            api_key_var.set(saved_key)
+            save_api_key()
+except FileNotFoundError:
+    pass
+
 segment_frame = tk.Frame(root, bg="#2b2b2b")
 segment_frame.grid(row=5, column=0, columnspan=4, pady=10)
 update_segment_fields()
 
 button_frame = tk.Frame(root, bg="#2b2b2b")
-button_frame.grid(row=6, column=0, columnspan=4)
+button_frame.grid(row=8, column=0, columnspan=4)
 
 download_btn = ttk.Button(button_frame, text="Download & Schneiden", command=start_process)
 download_btn.grid(row=0, column=0, padx=(20, 10), pady=20)
@@ -536,6 +667,13 @@ gif_label = tk.Label(button_frame, bg="#2b2b2b")
 gif_label.grid(row=0, column=1, padx=10)
 gif_label.grid_remove()
 
+# Optional: Füge einen Info-Text hinzu
+info_text = tk.Label(
+    transcription_frame, 
+    text="Hinweis: Die Transkription erfolgt nach dem Download und kann einige Minuten dauern.\nKosten: ~$0.006 pro Minute Audio",
+    fg="#888888", bg="#2b2b2b", font=("Segoe UI", 8), justify="left"
+)
+info_text.grid(row=3, column=0, columnspan=4, padx=10, pady=(5, 10), sticky="w")
 toggle_segment_ui()
 
 root.mainloop()
