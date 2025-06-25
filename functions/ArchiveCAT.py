@@ -23,7 +23,7 @@ from modern_style import apply_modern_style
 from whisper_transcriber import WhisperTranscriber
 from whisper_speaker_transcriber import WhisperSpeakerTranscriber
 from audio_video_splitter import split_video_audio  
-
+from pathlib import Path
 import pandas as pd
 
 # Import der Audio-Split-Funktionen
@@ -38,6 +38,13 @@ transcribe_enabled_var = None
 use_speakers_var = None
 openai_key_entry = None
 hf_token_entry = None
+validated_api_key = None
+language_var = None
+language_mapping = {}
+export_txt_var = None
+export_json_var = None
+export_xml_var = None
+export_srt_var = None
 
 # === EINSTELLUNGEN ===
 DOWNLOAD_DIR = r"C:\Users\rodtv\OneDrive\Desktop\Desktop\ArchiveCAT\data\videos"
@@ -138,6 +145,7 @@ def process_local_file(file_path, segment_times, delete_source, queue):
         # Erstelle Hauptordner für das Video
         video_folder = os.path.join(DOWNLOAD_DIR, title_text)
         os.makedirs(video_folder, exist_ok=True)
+        transcription_completed = True
         
         if queue:
             queue.put("status:Verarbeite lokale Datei...")
@@ -175,46 +183,12 @@ def process_local_file(file_path, segment_times, delete_source, queue):
                 if queue:
                     queue.put("status:Audio erfolgreich extrahiert")
                 
-                # Transkription durchführen wenn aktiviert
-                if result['audio_path'] and transcribe_enabled_var and transcribe_enabled_var.get():
-                    if queue:
-                        queue.put("status:Starte Transkription...")
-                    
-                    try:
-                        if use_speakers_var.get() and speaker_transcriber:
-                            # Mit Speaker Diarization
-                            trans_result = speaker_transcriber.transcribe_with_speakers(
-                                result['audio_path'],
-                                language="de",
-                                min_speakers=2,
-                                max_speakers=5
-                            )
-                            if trans_result['success']:
-                                output_path = os.path.join(segment_folder, "transkript")
-                                speaker_transcriber.save_transcription_with_speakers(trans_result, output_path)
-                                if queue:
-                                    queue.put(f"status:Transkription mit {trans_result['speaker_count']} Sprechern erstellt")
-                            else:
-                                if queue:
-                                    queue.put(f"status:Transkription fehlgeschlagen: {trans_result.get('error', 'Unbekannter Fehler')}")
-                        else:
-                            # Normale Transkription ohne Speaker
-                            trans_result = whisper_transcriber.transcribe_audio(
-                                result['audio_path'],
-                                language="de"
-                            )
-                            if trans_result['success']:
-                                output_path = os.path.join(segment_folder, "transkript")
-                                whisper_transcriber.save_transcription(trans_result, output_path)
-                                if queue:
-                                    queue.put("status:Transkription erstellt")
-                            else:
-                                if queue:
-                                    queue.put(f"status:Transkription fehlgeschlagen: {trans_result.get('error', 'Unbekannter Fehler')}")
-                    except Exception as e:
-                        print(f"Transkriptionsfehler: {e}")
-                        if queue:
-                            queue.put(f"status:Transkription fehlgeschlagen: {str(e)}")
+                if result['audio_path']:
+                    perform_transcription(result['audio_path'], segment_folder, queue)
+
+                # Für Segmente (in der Schleife):
+                if result['audio_path']:
+                    perform_transcription(result['audio_path'], segment_folder, queue, f"_segment_{i}")
             else:
                 print(f"Fehler bei Audio-Extraktion: {result['errors']}")
                 if queue:
@@ -393,6 +367,115 @@ def create_combined_speaker_json(video_folder):
     except Exception as e:
         print(f"Fehler beim Erstellen der kombinierten JSON: {e}")
 
+
+def perform_transcription(audio_path, segment_folder, queue, segment_name=""):
+    """Führt Transkription mit allen gewählten Export-Formaten durch"""
+    if not transcribe_enabled_var or not transcribe_enabled_var.get():
+        return
+    
+    # Hole gewählte Sprache
+    selected_language = language_mapping.get(language_var.get(), "de") if language_var else "de"
+    if selected_language == "auto":
+        selected_language = None  # Whisper erkennt automatisch
+    
+    try:
+        if use_speakers_var.get() and speaker_transcriber:
+            # Mit Speaker Diarization
+            trans_result = speaker_transcriber.transcribe_with_speakers(
+                audio_path,
+                language=selected_language,
+                min_speakers=2,
+                max_speakers=5
+            )
+            
+            if trans_result['success']:
+                output_path = os.path.join(segment_folder, f"transkript{segment_name}")
+                speaker_transcriber.save_transcription_with_speakers(trans_result, output_path)
+                
+                # XML Export wenn aktiviert
+                if export_xml_var and export_xml_var.get():
+                    try:
+                        from xml_exporter import TranscriptionExporter, ExportConfig, ExportFormat
+                        exporter = TranscriptionExporter()
+                        config = ExportConfig(formats={ExportFormat.XML: True})
+                        exporter.export(trans_result, output_path, config)
+                    except Exception as e:
+                        print(f"XML-Export Fehler: {e}")
+                
+                if queue:
+                    queue.put(f"status:Transkription mit {trans_result['speaker_count']} Sprechern erstellt")
+                return True
+            else:
+                if queue:
+                    queue.put(f"status:Transkription fehlgeschlagen: {trans_result.get('error', 'Unbekannter Fehler')}")
+                return False
+        else:
+            # Normale Transkription ohne Speaker
+            trans_result = whisper_transcriber.transcribe_audio(
+                audio_path,
+                language=selected_language
+            )
+            
+            if trans_result['success']:
+                output_path = os.path.join(segment_folder, f"transkript{segment_name}")
+                whisper_transcriber.save_transcription(trans_result, output_path)
+                
+                # XML Export wenn aktiviert
+                if export_xml_var and export_xml_var.get():
+                    try:
+                        from xml_exporter import TranscriptionExporter, ExportConfig, ExportFormat
+                        exporter = TranscriptionExporter()
+                        config = ExportConfig(formats={ExportFormat.XML: True})
+                        exporter.export(trans_result, output_path, config)
+                    except Exception as e:
+                        print(f"XML-Export Fehler: {e}")
+                
+                if queue:
+                    queue.put(f"status:Transkription{segment_name} erstellt")
+                return True
+            else:
+                if queue:
+                    queue.put(f"status:Transkription fehlgeschlagen: {trans_result.get('error', 'Unbekannter Fehler')}")
+                return False
+                
+    except Exception as e:
+        print(f"Transkriptionsfehler: {e}")
+        if queue:
+            queue.put(f"status:Transkription fehlgeschlagen: {str(e)}")
+        return False
+    
+def save_transcription_with_formats(transcription_data, output_path, export_formats, is_speaker_transcription=False):
+    """Speichert Transkription in allen gewählten Formaten inklusive XML"""
+    from xml_exporter import TranscriptionExporter, ExportConfig, ExportFormat
+    
+    try:
+        output_path = Path(output_path)
+        
+        if is_speaker_transcription and speaker_transcriber:
+            # Nutze die eingebaute Save-Funktion für Speaker-Transkriptionen
+            speaker_transcriber.save_transcription_with_speakers(transcription_data, str(output_path))
+        else:
+            # Nutze die eingebaute Save-Funktion für normale Transkriptionen
+            whisper_transcriber.save_transcription(transcription_data, str(output_path))
+        
+        # Zusätzlich XML-Export wenn gewählt
+        if export_formats.get('xml', True):
+            exporter = TranscriptionExporter()
+            config = ExportConfig(
+                formats={ExportFormat.XML: True},
+                include_metadata=True,
+                include_statistics=True
+            )
+            
+            xml_result = exporter.export(transcription_data, output_path, config)
+            if xml_result.get(ExportFormat.XML):
+                print(f"✓ XML-Export erfolgreich: {output_path.with_suffix('.xml')}")
+            else:
+                print(f"✗ XML-Export fehlgeschlagen")
+                
+    except Exception as e:
+        print(f"Fehler beim Speichern der Transkription: {e}")
+
 def download_video(url, segment_times, delete_source=False, download_dir=DOWNLOAD_DIR, queue=None):
     chrome_options = Options()
     chrome_options.add_argument('--headless')
@@ -522,6 +605,15 @@ def download_video(url, segment_times, delete_source=False, download_dir=DOWNLOA
                 successful_segments = 1
                 if queue:
                     queue.put("status:Audio erfolgreich extrahiert")
+                
+                # HIER NEU EINFÜGEN:
+                if result['audio_path']:
+                    perform_transcription(result['audio_path'], segment_folder, queue)
+
+            if result['success']:
+                successful_segments = 1
+                if queue:
+                    queue.put("status:Audio erfolgreich extrahiert")
             else:
                 print(f"Fehler bei Audio-Extraktion: {result['errors']}")
                 if queue:
@@ -551,6 +643,8 @@ def download_video(url, segment_times, delete_source=False, download_dir=DOWNLOA
                         successful_segments += 1
                         if queue:
                             queue.put(f"status:Segment {i} mit Audio erfolgreich erstellt")
+                        if result['audio_path']:
+                            perform_transcription(result['audio_path'], segment_folder, queue, f"_segment_{i}")
                     else:
                         print(f"Fehler bei Audio-Extraktion für Segment {i}: {result['errors']}")
                         # Segment trotzdem als erfolgreich zählen, wenn Video erstellt wurde

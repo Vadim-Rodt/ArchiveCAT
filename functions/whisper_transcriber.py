@@ -28,8 +28,9 @@ class WhisperTranscriber:
         self.model = model
         
     def transcribe_audio(self, audio_path: str, language: str = None, prompt: str = None) -> Dict:
+
         """
-        Transkribiert eine einzelne Audio-Datei
+        Transkribiert eine einzelne Audio-Datei mit erweiterten Features
         
         Args:
             audio_path (str): Pfad zur Audio-Datei
@@ -41,6 +42,7 @@ class WhisperTranscriber:
                 'success': bool,
                 'text': str,
                 'segments': list (optional),
+                'words': list (optional),
                 'error': str (bei Fehler)
             }
         """
@@ -59,11 +61,12 @@ class WhisperTranscriber:
             
             # Öffne Audio-Datei
             with open(audio_path, 'rb') as audio_file:
-                # Basis-Parameter
+                # Erweiterte Parameter für bessere Ergebnisse
                 params = {
                     "model": self.model,
                     "file": audio_file,
-                    "response_format": "verbose_json"  # Gibt auch Timestamps zurück
+                    "response_format": "verbose_json",  # Gibt Timestamps zurück
+                    "temperature": 0.0,  # Deterministischere Ergebnisse
                 }
                 
                 # Optionale Parameter
@@ -72,43 +75,119 @@ class WhisperTranscriber:
                 if prompt:
                     params["prompt"] = prompt
                 
-                # API-Aufruf
-                response = self.client.audio.transcriptions.create(**params)
+                # Versuche erweiterte Features (nicht alle API-Versionen unterstützen diese)
+                try:
+                    # Timestamp Granularität für Wort-Level Timestamps
+                    params["timestamp_granularities"] = ["segment", "word"]
+                except:
+                    # Fallback für ältere API-Versionen
+                    pass
+                
+                # API-Aufruf mit Retry-Logik
+                max_retries = 3
+                last_error = None
+                
+                for attempt in range(max_retries):
+                    try:
+                        response = self.client.audio.transcriptions.create(**params)
+                        break  # Erfolgreich, beende Schleife
+                    except Exception as api_error:
+                        last_error = api_error
+                        error_msg = str(api_error)
+                        
+                        # Spezifische Fehlerbehandlung
+                        if 'Incorrect API key' in error_msg:
+                            return {'success': False, 'error': 'Ungültiger API Key'}
+                        elif 'quota' in error_msg.lower() or 'rate limit' in error_msg.lower():
+                            return {'success': False, 'error': 'API-Kontingent überschritten oder Rate-Limit erreicht'}
+                        elif 'timeout' in error_msg.lower():
+                            if attempt < max_retries - 1:
+                                print(f"Timeout bei Versuch {attempt + 1}/{max_retries}, versuche erneut...")
+                                time.sleep(2 ** attempt)  # Exponentielles Backoff
+                                continue
+                        
+                        # Bei anderen Fehlern: Retry mit Backoff
+                        if attempt < max_retries - 1:
+                            print(f"API-Fehler bei Versuch {attempt + 1}/{max_retries}: {error_msg}")
+                            time.sleep(2 ** attempt)
+                        else:
+                            # Letzter Versuch fehlgeschlagen
+                            raise last_error
             
-            # Ergebnis verarbeiten
+            # Verarbeite erfolgreiche Response
             result = {
                 'success': True,
                 'text': response.text,
                 'language': getattr(response, 'language', language),
-                'duration': getattr(response, 'duration', None)
+                'duration': getattr(response, 'duration', None),
+                'model': self.model
             }
             
-            # Segments mit Timestamps wenn verfügbar
+            # Segments mit erweiterten Informationen
             if hasattr(response, 'segments'):
-                result['segments'] = [
-                    {
+                result['segments'] = []
+                for idx, seg in enumerate(response.segments):
+                    segment_data = {
+                        'id': idx,
                         'start': seg.start,
                         'end': seg.end,
                         'text': seg.text
                     }
-                    for seg in response.segments
+                    
+                    # Füge optionale Felder hinzu wenn verfügbar
+                    if hasattr(seg, 'avg_logprob'):
+                        segment_data['avg_logprob'] = seg.avg_logprob
+                    if hasattr(seg, 'compression_ratio'):
+                        segment_data['compression_ratio'] = seg.compression_ratio
+                    if hasattr(seg, 'no_speech_prob'):
+                        segment_data['no_speech_prob'] = seg.no_speech_prob
+                    if hasattr(seg, 'tokens'):
+                        segment_data['tokens'] = seg.tokens
+                    
+                    result['segments'].append(segment_data)
+            
+            # Words mit Timestamps (wenn verfügbar)
+            if hasattr(response, 'words'):
+                result['words'] = [
+                    {
+                        'word': word.word,
+                        'start': word.start,
+                        'end': word.end,
+                        'probability': getattr(word, 'probability', None)
+                    }
+                    for word in response.words
                 ]
+            
+            # Zusätzliche Metriken wenn verfügbar
+            if hasattr(response, 'avg_logprob'):
+                result['avg_logprob'] = response.avg_logprob
+            if hasattr(response, 'compression_ratio'):
+                result['compression_ratio'] = response.compression_ratio
             
             return result
             
         except Exception as e:
-            return {'success': False, 'error': f'Transkriptionsfehler: {str(e)}'}
-    
+            error_msg = str(e)
+            
+            # Detaillierte Fehlerbehandlung
+            if 'Incorrect API key' in error_msg:
+                return {'success': False, 'error': 'Ungültiger API Key'}
+            elif 'quota' in error_msg.lower():
+                return {'success': False, 'error': 'API-Kontingent überschritten'}
+            elif 'Invalid audio file' in error_msg:
+                return {'success': False, 'error': 'Ungültige Audio-Datei'}
+            elif 'timeout' in error_msg.lower():
+                return {'success': False, 'error': 'Zeitüberschreitung bei der API-Anfrage'}
+            else:
+                return {'success': False, 'error': f'Transkriptionsfehler: {error_msg}'}
+
+
+    # === ZUSÄTZLICH: Erweitere die save_transcription Methode ===
+    # Um die erweiterten Daten zu nutzen:
+
     def save_transcription(self, transcription: Dict, output_path: str) -> bool:
         """
-        Speichert Transkription in verschiedenen Formaten
-        
-        Args:
-            transcription (dict): Transkriptionsergebnis
-            output_path (str): Ausgabepfad (ohne Erweiterung)
-            
-        Returns:
-            bool: Erfolg
+        Speichert Transkription in verschiedenen Formaten (erweiterte Version)
         """
         try:
             output_path = Path(output_path)
@@ -119,7 +198,7 @@ class WhisperTranscriber:
             with open(text_path, 'w', encoding='utf-8') as f:
                 f.write(transcription['text'])
             
-            # Speichere als JSON mit allen Details
+            # Speichere als JSON mit allen Details (inklusive Words wenn vorhanden)
             json_path = output_path.with_suffix('.json')
             with open(json_path, 'w', encoding='utf-8') as f:
                 json.dump(transcription, f, ensure_ascii=False, indent=2)
@@ -128,6 +207,38 @@ class WhisperTranscriber:
             if 'segments' in transcription and transcription['segments']:
                 srt_path = output_path.with_suffix('.srt')
                 self._create_srt(transcription['segments'], srt_path)
+            
+            # NEU: Wenn Words vorhanden, erstelle auch eine Wort-Level Datei
+            if 'words' in transcription and transcription['words']:
+                words_path = output_path.with_suffix('.words.json')
+                with open(words_path, 'w', encoding='utf-8') as f:
+                    json.dump({
+                        'words': transcription['words'],
+                        'total_words': len(transcription['words']),
+                        'duration': transcription.get('duration', 0)
+                    }, f, ensure_ascii=False, indent=2)
+            
+            # NEU: Erstelle erweiterte Statistik-Datei
+            if any(key in transcription for key in ['avg_logprob', 'compression_ratio', 'segments']):
+                stats_path = output_path.with_name(f"{output_path.stem}_stats.json")
+                stats = {
+                    'file': output_path.stem,
+                    'language': transcription.get('language', 'unknown'),
+                    'duration': transcription.get('duration', 0),
+                    'word_count': len(transcription.get('text', '').split()),
+                    'segment_count': len(transcription.get('segments', [])),
+                    'avg_logprob': transcription.get('avg_logprob'),
+                    'compression_ratio': transcription.get('compression_ratio')
+                }
+                
+                # Berechne durchschnittliche Konfidenz wenn Segments vorhanden
+                if 'segments' in transcription and transcription['segments']:
+                    no_speech_probs = [seg.get('no_speech_prob', 0) for seg in transcription['segments'] if 'no_speech_prob' in seg]
+                    if no_speech_probs:
+                        stats['avg_speech_confidence'] = 1 - (sum(no_speech_probs) / len(no_speech_probs))
+                
+                with open(stats_path, 'w', encoding='utf-8') as f:
+                    json.dump(stats, f, ensure_ascii=False, indent=2)
             
             print(f"Transkription gespeichert: {text_path}")
             return True
