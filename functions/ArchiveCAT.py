@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import json  # FEHLT!
 import requests
 import subprocess
 import threading
@@ -18,7 +19,10 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
-from modern_style import apply_modern_style
+from modern_style import apply_modern_style 
+from whisper_transcriber import WhisperTranscriber
+from whisper_speaker_transcriber import WhisperSpeakerTranscriber
+from audio_video_splitter import split_video_audio  
 
 import pandas as pd
 
@@ -28,6 +32,12 @@ from audio_video_splitter import split_video_audio
 # === Globale Variablen für GIF ===
 gif_frames = []
 gif_running = False
+whisper_transcriber = None
+speaker_transcriber = None
+transcribe_enabled_var = None
+use_speakers_var = None
+openai_key_entry = None
+hf_token_entry = None
 
 # === EINSTELLUNGEN ===
 DOWNLOAD_DIR = r"C:\Users\rodtv\OneDrive\Desktop\Desktop\ArchiveCAT\data\videos"
@@ -118,7 +128,7 @@ def threaded_download(url, segment_times, delete_source, queue):
         queue.put(f"error:{str(e)}")
 
 def process_local_file(file_path, segment_times, delete_source, queue):
-    """Verarbeitet lokale Video-Datei ähnlich wie Download"""
+    """Verarbeitet lokale Video-Datei mit optionaler Transkription"""
     try:
         # Extrahiere Dateiname ohne Pfad
         filename = os.path.basename(file_path)
@@ -135,6 +145,9 @@ def process_local_file(file_path, segment_times, delete_source, queue):
         # Segmentierung
         successful_segments = 0
         total_segments = len(segment_times)
+        
+        # Liste für alle Audio-Pfade (für Gesamttranskript)
+        all_audio_paths = []
         
         # Spezialbehandlung für Gesamtvideo
         if total_segments == 1 and segment_times[0][0] == "00:00:00" and time_to_seconds(segment_times[0][1]) == video_duration_seconds:
@@ -161,6 +174,47 @@ def process_local_file(file_path, segment_times, delete_source, queue):
                 successful_segments = 1
                 if queue:
                     queue.put("status:Audio erfolgreich extrahiert")
+                
+                # Transkription durchführen wenn aktiviert
+                if result['audio_path'] and transcribe_enabled_var and transcribe_enabled_var.get():
+                    if queue:
+                        queue.put("status:Starte Transkription...")
+                    
+                    try:
+                        if use_speakers_var.get() and speaker_transcriber:
+                            # Mit Speaker Diarization
+                            trans_result = speaker_transcriber.transcribe_with_speakers(
+                                result['audio_path'],
+                                language="de",
+                                min_speakers=2,
+                                max_speakers=5
+                            )
+                            if trans_result['success']:
+                                output_path = os.path.join(segment_folder, "transkript")
+                                speaker_transcriber.save_transcription_with_speakers(trans_result, output_path)
+                                if queue:
+                                    queue.put(f"status:Transkription mit {trans_result['speaker_count']} Sprechern erstellt")
+                            else:
+                                if queue:
+                                    queue.put(f"status:Transkription fehlgeschlagen: {trans_result.get('error', 'Unbekannter Fehler')}")
+                        else:
+                            # Normale Transkription ohne Speaker
+                            trans_result = whisper_transcriber.transcribe_audio(
+                                result['audio_path'],
+                                language="de"
+                            )
+                            if trans_result['success']:
+                                output_path = os.path.join(segment_folder, "transkript")
+                                whisper_transcriber.save_transcription(trans_result, output_path)
+                                if queue:
+                                    queue.put("status:Transkription erstellt")
+                            else:
+                                if queue:
+                                    queue.put(f"status:Transkription fehlgeschlagen: {trans_result.get('error', 'Unbekannter Fehler')}")
+                    except Exception as e:
+                        print(f"Transkriptionsfehler: {e}")
+                        if queue:
+                            queue.put(f"status:Transkription fehlgeschlagen: {str(e)}")
             else:
                 print(f"Fehler bei Audio-Extraktion: {result['errors']}")
                 if queue:
@@ -190,11 +244,58 @@ def process_local_file(file_path, segment_times, delete_source, queue):
                         successful_segments += 1
                         if queue:
                             queue.put(f"status:Segment {i} mit Audio erfolgreich erstellt")
+                        
+                        # Füge Audio-Pfad zur Liste hinzu
+                        if result['audio_path']:
+                            all_audio_paths.append((i, result['audio_path'], segment_folder))
+                        
+                        # Transkription durchführen wenn aktiviert
+                        if result['audio_path'] and transcribe_enabled_var and transcribe_enabled_var.get():
+                            if queue:
+                                queue.put(f"status:Transkribiere Segment {i}...")
+                            
+                            try:
+                                if use_speakers_var.get() and speaker_transcriber:
+                                    # Mit Speaker Diarization
+                                    trans_result = speaker_transcriber.transcribe_with_speakers(
+                                        result['audio_path'],
+                                        language="de",
+                                        min_speakers=2,
+                                        max_speakers=5
+                                    )
+                                    if trans_result['success']:
+                                        output_path = os.path.join(segment_folder, f"transkript_segment_{i}")
+                                        speaker_transcriber.save_transcription_with_speakers(trans_result, output_path)
+                                        if queue:
+                                            queue.put(f"status:Segment {i}: {trans_result['speaker_count']} Sprecher erkannt")
+                                    else:
+                                        print(f"Transkription für Segment {i} fehlgeschlagen: {trans_result.get('error')}")
+                                else:
+                                    # Normale Transkription ohne Speaker
+                                    trans_result = whisper_transcriber.transcribe_audio(
+                                        result['audio_path'],
+                                        language="de"
+                                    )
+                                    if trans_result['success']:
+                                        output_path = os.path.join(segment_folder, f"transkript_segment_{i}")
+                                        whisper_transcriber.save_transcription(trans_result, output_path)
+                                        if queue:
+                                            queue.put(f"status:Segment {i} transkribiert")
+                                    else:
+                                        print(f"Transkription für Segment {i} fehlgeschlagen: {trans_result.get('error')}")
+                            except Exception as e:
+                                print(f"Transkriptionsfehler bei Segment {i}: {e}")
                     else:
                         print(f"Fehler bei Audio-Extraktion für Segment {i}: {result['errors']}")
                         successful_segments += 1
                 else:
                     print(f"Segment {i} konnte nicht erstellt werden")
+        
+        # Erstelle Gesamttranskript wenn mehrere Segmente transkribiert wurden
+        if len(all_audio_paths) > 1 and transcribe_enabled_var and transcribe_enabled_var.get():
+            if queue:
+                queue.put("status:Erstelle Gesamttranskript...")
+            create_combined_transcript(video_folder)
         
         if queue:
             queue.put(f"status:Fertig! {successful_segments}/{total_segments} Segmente erstellt")
@@ -206,6 +307,91 @@ def process_local_file(file_path, segment_times, delete_source, queue):
             
     except Exception as e:
         queue.put(f"error:{str(e)}")
+
+
+# Zusätzliche Hilfsfunktion für das Gesamttranskript
+def create_combined_transcript(video_folder):
+    """Erstellt ein kombiniertes Transkript aller Segmente"""
+    try:
+        all_transcripts = []
+        
+        # Durchsuche alle Segment-Ordner
+        segment_folders = []
+        for folder_name in os.listdir(video_folder):
+            if folder_name.startswith("Segment_"):
+                segment_folders.append(folder_name)
+        
+        # Sortiere nach Segment-Nummer
+        segment_folders.sort(key=lambda x: int(x.split("_")[1]))
+        
+        # Sammle alle Transkripte
+        for folder_name in segment_folders:
+            segment_path = os.path.join(video_folder, folder_name)
+            
+            # Suche nach Transkript-Dateien (txt Format)
+            for file in os.listdir(segment_path):
+                if file.startswith("transkript_segment_") and file.endswith(".txt"):
+                    transcript_path = os.path.join(segment_path, file)
+                    with open(transcript_path, 'r', encoding='utf-8') as f:
+                        content = f.read().strip()
+                        if content:
+                            all_transcripts.append(f"=== {folder_name} ===\n{content}\n")
+                    break
+        
+        if all_transcripts:
+            # Speichere Gesamttranskript im Hauptordner
+            combined_path = os.path.join(video_folder, "Gesamttranskript.txt")
+            with open(combined_path, 'w', encoding='utf-8') as f:
+                f.write(f"GESAMTTRANSKRIPT\n")
+                f.write(f"Video: {os.path.basename(video_folder)}\n")
+                f.write(f"Anzahl Segmente: {len(all_transcripts)}\n")
+                f.write("=" * 80 + "\n\n")
+                f.write("\n\n".join(all_transcripts))
+            
+            print(f"Gesamttranskript erstellt: {combined_path}")
+            
+            # Erstelle auch eine JSON-Version wenn Sprecher erkannt wurden
+            if use_speakers_var and use_speakers_var.get():
+                create_combined_speaker_json(video_folder)
+                
+    except Exception as e:
+        print(f"Fehler beim Erstellen des Gesamttranskripts: {e}")
+
+
+def create_combined_speaker_json(video_folder):
+    """Erstellt eine kombinierte JSON-Datei mit allen Speaker-Informationen"""
+    try:
+        combined_data = {
+            "video": os.path.basename(video_folder),
+            "segments": []
+        }
+        
+        # Sammle alle JSON-Dateien
+        for folder_name in sorted(os.listdir(video_folder)):
+            if folder_name.startswith("Segment_"):
+                segment_path = os.path.join(video_folder, folder_name)
+                
+                for file in os.listdir(segment_path):
+                    if file.startswith("transkript_segment_") and file.endswith(".json"):
+                        json_path = os.path.join(segment_path, file)
+                        with open(json_path, 'r', encoding='utf-8') as f:
+                            segment_data = json.load(f)
+                            combined_data["segments"].append({
+                                "segment": folder_name,
+                                "data": segment_data
+                            })
+                        break
+        
+        if combined_data["segments"]:
+            # Speichere kombinierte JSON
+            combined_json_path = os.path.join(video_folder, "Gesamttranskript_mit_Sprechern.json")
+            with open(combined_json_path, 'w', encoding='utf-8') as f:
+                json.dump(combined_data, f, ensure_ascii=False, indent=2)
+            
+            print(f"Kombinierte Speaker-JSON erstellt: {combined_json_path}")
+            
+    except Exception as e:
+        print(f"Fehler beim Erstellen der kombinierten JSON: {e}")
 
 def download_video(url, segment_times, delete_source=False, download_dir=DOWNLOAD_DIR, queue=None):
     chrome_options = Options()
@@ -416,7 +602,7 @@ try:
 except Exception as e:
     print("Fehler beim Setzen des Icons:", e)
 
-root.geometry("700x500")
+root.geometry("550x650")
 root.configure(bg="#2b2b2b")
 
 font_style = ("Segoe UI", 10)
@@ -452,6 +638,11 @@ def toggle_segment_ui():
 
 def start_process():
     global video_duration_seconds, gif_frames
+    
+    # NEUE ZEILEN: Initialisiere Transcriber wenn aktiviert
+    if transcribe_enabled_var and transcribe_enabled_var.get():
+        if not initialize_transcribers():
+            return
     
     # Prüfe ob URL oder lokale Datei
     if source_type_var.get() == "url":
@@ -690,6 +881,186 @@ def confirm_local_file():
             duration_label.config(text="Videolänge: nicht ermittelbar")
             status_label.config(text="Fehler beim Lesen der Datei", fg="#ff0000")
 
+def create_transcription_frame():
+    """Erstellt den Transkriptions-Bereich der GUI"""
+    global transcribe_enabled_var, use_speakers_var, openai_key_entry, hf_token_entry
+    
+    # Transkriptions-Frame
+    transcription_frame = tk.LabelFrame(
+        root, 
+        text="Transkription (Optional)", 
+        fg=label_fg, 
+        bg="#2b2b2b", 
+        font=("Segoe UI", 11, "bold")
+    )
+    transcription_frame.grid(row=9, column=0, columnspan=4, pady=10, padx=20, sticky="ew")
+    
+    # Transkription aktivieren Checkbox
+    transcribe_enabled_var = tk.BooleanVar(value=False)
+    transcribe_checkbox = tk.Checkbutton(
+        transcription_frame,
+        text="Audio automatisch transkribieren",
+        variable=transcribe_enabled_var,
+        command=toggle_transcription_ui,
+        fg=label_fg,
+        bg="#2b2b2b",
+        font=font_style,
+        selectcolor="#2b2b2b",
+        activebackground="#2b2b2b"
+    )
+    transcribe_checkbox.grid(row=0, column=0, columnspan=3, sticky="w", padx=10, pady=5)
+    
+    # OpenAI API Key
+    tk.Label(
+        transcription_frame,
+        text="OpenAI API Key:",
+        fg=label_fg,
+        bg="#2b2b2b",
+        font=font_style
+    ).grid(row=1, column=0, sticky="e", padx=(20, 10), pady=5)
+    
+    openai_key_entry = tk.Entry(
+        transcription_frame,
+        width=40,
+        show="*",
+        bg=entry_bg,
+        fg=entry_fg,
+        insertbackground="white"
+    )
+    openai_key_entry.grid(row=1, column=1, padx=5, pady=5)
+    
+    # Test API Key Button
+    test_key_btn = ttk.Button(
+        transcription_frame,
+        text="API Key testen",
+        command=test_api_key
+    )
+    test_key_btn.grid(row=1, column=2, padx=5, pady=5)
+    
+    # Speaker Diarization Option
+    use_speakers_var = tk.BooleanVar(value=False)
+    speakers_checkbox = tk.Checkbutton(
+        transcription_frame,
+        text="Mehrere Sprecher erkennen",
+        variable=use_speakers_var,
+        command=toggle_speaker_options,
+        fg=label_fg,
+        bg="#2b2b2b",
+        font=font_style,
+        selectcolor="#2b2b2b",
+        activebackground="#2b2b2b"
+    )
+    speakers_checkbox.grid(row=2, column=0, columnspan=2, sticky="w", padx=10, pady=5)
+    
+    # Hugging Face Token (für Speaker Diarization)
+    hf_label = tk.Label(
+        transcription_frame,
+        text="Hugging Face Token:",
+        fg=label_fg,
+        bg="#2b2b2b",
+        font=font_style
+    )
+    hf_label.grid(row=3, column=0, sticky="e", padx=(20, 10), pady=5)
+    hf_label.grid_remove()  # Initial versteckt
+    
+    hf_token_entry = tk.Entry(
+        transcription_frame,
+        width=40,
+        show="*",
+        bg=entry_bg,
+        fg=entry_fg,
+        insertbackground="white"
+    )
+    hf_token_entry.grid(row=3, column=1, padx=5, pady=5)
+    hf_token_entry.grid_remove()  # Initial versteckt
+    
+    # Info Label
+    info_text = """Hinweise:
+    • OpenAI API Key wird für Whisper-Transkription benötigt
+    • Hugging Face Token nur für Sprecher-Erkennung erforderlich
+    • Audio-Dateien werden automatisch nach der Segmentierung transkribiert"""
+    
+    info_label = tk.Label(
+        transcription_frame,
+        text=info_text,
+        fg="#888888",
+        bg="#2b2b2b",
+        font=("Segoe UI", 9),
+        justify="left"
+    )
+    info_label.grid(row=4, column=0, columnspan=3, padx=10, pady=10, sticky="w")
+    
+    # Initial deaktiviert
+    toggle_transcription_ui()
+
+def toggle_transcription_ui():
+    """Aktiviert/Deaktiviert Transkriptions-UI Elemente"""
+    if transcribe_enabled_var.get():
+        openai_key_entry.configure(state="normal")
+        # Weitere UI-Elemente aktivieren
+    else:
+        openai_key_entry.configure(state="disabled")
+        use_speakers_var.set(False)
+        toggle_speaker_options()
+
+def toggle_speaker_options():
+    """Zeigt/Versteckt Speaker-spezifische Optionen"""
+    for widget in root.grid_slaves():
+        if isinstance(widget, tk.Label) and "Hugging Face" in widget.cget("text"):
+            if use_speakers_var.get():
+                widget.grid()
+            else:
+                widget.grid_remove()
+    
+    if use_speakers_var.get():
+        hf_token_entry.grid()
+    else:
+        hf_token_entry.grid_remove()
+
+def test_api_key():
+    """Testet den eingegebenen OpenAI API Key"""
+    api_key = openai_key_entry.get().strip()
+    if not api_key:
+        messagebox.showerror("Fehler", "Bitte geben Sie einen API Key ein.")
+        return
+    
+    try:
+        # Test mit kleiner Audio-Datei oder Dummy-Request
+        test_transcriber = WhisperTranscriber(api_key)
+        # Hier könnte ein Test-API-Call gemacht werden
+        status_label.config(text="API Key gültig", fg="#00ff00")
+        messagebox.showinfo("Erfolg", "API Key wurde erfolgreich validiert!")
+    except Exception as e:
+        status_label.config(text="API Key ungültig", fg="#ff0000")
+        messagebox.showerror("Fehler", f"API Key Validierung fehlgeschlagen: {str(e)}")
+
+def initialize_transcribers():
+    """Initialisiert die Transcriber mit den eingegebenen Keys"""
+    global whisper_transcriber, speaker_transcriber
+    
+    if not transcribe_enabled_var.get():
+        return True
+    
+    openai_key = openai_key_entry.get().strip()
+    if not openai_key:
+        messagebox.showerror("Fehler", "Bitte OpenAI API Key eingeben.")
+        return False
+    
+    try:
+        whisper_transcriber = WhisperTranscriber(openai_key)
+        
+        if use_speakers_var.get():
+            hf_token = hf_token_entry.get().strip()
+            if not hf_token:
+                messagebox.showerror("Fehler", "Bitte Hugging Face Token eingeben für Sprecher-Erkennung.")
+                return False
+            speaker_transcriber = WhisperSpeakerTranscriber(openai_key, hf_token)
+        
+        return True
+    except Exception as e:
+        messagebox.showerror("Fehler", f"Fehler beim Initialisieren der Transcriber: {str(e)}")
+        return False
+
 tk.Label(file_frame, text="Lokale Datei:", fg=label_fg, bg="#2b2b2b", font=font_style).grid(row=0, column=0, sticky="e", padx=20)
 browse_button = ttk.Button(file_frame, text="Durchsuchen", command=browse_file, state="disabled")
 browse_button.grid(row=0, column=1, padx=5)
@@ -765,5 +1136,14 @@ gif_label.grid(row=0, column=1, padx=10)
 gif_label.grid_remove()
 
 toggle_segment_ui()
+
+# Erstelle Transkriptions-Frame
+create_transcription_frame()
+
+# Verschiebe Button-Frame nach unten um Platz für Transkriptions-Frame zu machen
+button_frame.grid(row=10, column=0, columnspan=4)  # War vorher row=8
+
+# Aktualisiere auch die Segment-Frame Position
+segment_frame.grid(row=7, column=0, columnspan=4, pady=10)
 
 root.mainloop()

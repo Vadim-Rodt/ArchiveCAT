@@ -8,7 +8,7 @@ PALETTE = {
     "bg":      "#111315",   # Main background
     "fg":      "#f4f4f4",   # Main foreground
     "accent":  "#028ac4",   # Accent / Buttons
-    "border":  "#31343b",   # Border color
+    "border":  "#101112",   # Border color
     "input_bg": "#282c34",  # Entry background
     "input_fg": "#e8e8e8",  # Entry foreground
     "label_fg": "#dddddd",  # Label color
