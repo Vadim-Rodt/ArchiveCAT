@@ -1,9 +1,13 @@
-# ArchiveCAT.py - Modularisierte Version
+# ArchiveCAT.py - Modularisierte Version (FIXED)
 """
 Hauptmodul für ArchiveCAT - Complex Annotation Tool
 """
 
+import sys
 import os
+# Füge den aktuellen Ordner zum Python-Path hinzu
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 import tkinter as tk
 from tkinter import messagebox, ttk, filedialog
 from queue import Queue, Empty
@@ -55,6 +59,7 @@ export_txt_var = None
 export_json_var = None
 export_xml_var = None
 export_srt_var = None
+export_frame = None  # Globale Variable für Export-Frame
 
 video_duration_seconds = None
 segment_entries = []
@@ -304,20 +309,27 @@ def start_gif_animation():
     global gif_frames, gif_running
     
     try:
-        gif = Image.open("logo.gif")
-        frames = []
-        for frame in ImageSequence.Iterator(gif):
-            resized_frame = frame.copy().convert("RGBA")
-            resized_frame.thumbnail((100, 100), Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.ANTIALIAS)
-            frames.append(ImageTk.PhotoImage(resized_frame))
-        gif_frames = frames
-        gif_running = True
-        gif_label.config(image=gif_frames[0])
-        gif_label.image = gif_frames[0]
-        gif_label.grid()
-        animate_gif()
+        # Suche logo.gif im gleichen Verzeichnis wie die Script-Datei
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        gif_path = os.path.join(script_dir, "logo.gif")
+        
+        if os.path.exists(gif_path):
+            gif = Image.open(gif_path)
+            frames = []
+            for frame in ImageSequence.Iterator(gif):
+                resized_frame = frame.copy().convert("RGBA")
+                resized_frame.thumbnail((100, 100), Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.ANTIALIAS)
+                frames.append(ImageTk.PhotoImage(resized_frame))
+            gif_frames = frames
+            gif_running = True
+            gif_label.config(image=gif_frames[0])
+            gif_label.image = gif_frames[0]
+            gif_label.grid()
+            animate_gif()
+        else:
+            print(f"GIF nicht gefunden: {gif_path}")
     except Exception as e:
-        print("GIF-Fehler:", e)
+        print(f"GIF-Fehler: {e}")
 
 def animate_gif(index=0):
     """Animiert das GIF"""
@@ -414,6 +426,7 @@ def create_transcription_frame():
     """Erstellt den Transkriptions-Bereich der GUI"""
     global transcribe_enabled_var, use_speakers_var, openai_key_entry, hf_token_entry
     global language_var, export_txt_var, export_json_var, export_xml_var, export_srt_var
+    global export_frame
     
     # Transkriptions-Frame
     transcription_frame = tk.LabelFrame(
@@ -568,31 +581,29 @@ def create_transcription_frame():
 
 def toggle_transcription_ui():
     """Aktiviert/Deaktiviert Transkriptions-UI Elemente"""
+    global export_frame
+    
     if transcribe_enabled_var.get():
         openai_key_entry.configure(state="normal")
-        for widget in root.grid_slaves():
-            if isinstance(widget, tk.Frame) and widget.winfo_children():
-                if any("Export-Formate" in str(child.cget("text") if hasattr(child, 'cget') else '') 
-                       for child in widget.winfo_children()):
-                    for child in widget.winfo_children():
-                        if isinstance(child, tk.Checkbutton):
-                            child.configure(state="normal")
+        # Aktiviere Export-Format Checkboxen
+        if export_frame:
+            for child in export_frame.winfo_children():
+                if isinstance(child, tk.Checkbutton):
+                    child.configure(state="normal")
     else:
         openai_key_entry.configure(state="disabled")
         use_speakers_var.set(False)
         toggle_speaker_options()
-        for widget in root.grid_slaves():
-            if isinstance(widget, tk.Frame) and widget.winfo_children():
-                if any("Export-Formate" in str(child.cget("text") if hasattr(child, 'cget') else '') 
-                       for child in widget.winfo_children()):
-                    for child in widget.winfo_children():
-                        if isinstance(child, tk.Checkbutton):
-                            child.configure(state="disabled")
+        # Deaktiviere Export-Format Checkboxen
+        if export_frame:
+            for child in export_frame.winfo_children():
+                if isinstance(child, tk.Checkbutton):
+                    child.configure(state="disabled")
 
 def toggle_speaker_options():
     """Zeigt/Versteckt Speaker-spezifische Optionen"""
     for widget in root.grid_slaves():
-        if isinstance(widget, tk.Label) and "Hugging Face" in widget.cget("text"):
+        if isinstance(widget, tk.Label) and widget.cget("text") == "Hugging Face Token:":
             if use_speakers_var.get():
                 widget.grid()
             else:
