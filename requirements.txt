@@ -1,0 +1,13 @@
+librosa
+numpy
+openai
+pandas
+pillow
+praat-parselmouth
+pyannote-audio
+pydub
+requests
+scipy
+seaborn
+selenium
+torch
