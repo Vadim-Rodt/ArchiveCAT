@@ -23,8 +23,16 @@ from download_manager import ArchiveDownloader
 from transcription_manager import TranscriptionManager
 from file_processor import FileProcessor
 from audio_video_splitter import split_video_audio
+from prosody_analyzer import ProsodyAnalyzer
+
+from prosody_integration import (
+    ProsodyIntegration, 
+    enhance_file_processor_with_prosody,
+    add_prosody_menu_items
+)
 
 # === Globale Variablen ===
+
 gif_frames = []
 gif_running = False
 config_manager = None
@@ -32,6 +40,16 @@ video_processor = None
 archive_downloader = None
 transcription_manager = None
 file_processor = None
+script_dir = os.path.dirname(os.path.abspath(__file__))
+icon_path = os.path.join(script_dir, "logo.png")
+menu_bar = tk.Menu(root)
+root.config(menu=menu_bar)
+add_prosody_menu_items(menu_bar, root)
+
+"""analyzer = ProsodyAnalyzer()
+results = analyzer.analyze_audio("audio.wav", gender="male")
+analyzer.save_results(results, "output/prosody")
+analyzer.create_visualization("audio.wav", results, "output/viz.png")"""
 
 # UI Variablen
 transcribe_enabled_var = None
@@ -69,15 +87,19 @@ segment_entries = []
 def initialize_managers():
     """Initialisiert alle Manager-Klassen"""
     global config_manager, video_processor, archive_downloader, transcription_manager, file_processor
-    
+    prosody_integration.add_to_file_processor(file_processor)
+
     config_manager = ConfigManager()
     video_processor = VideoProcessor()
     archive_downloader = ArchiveDownloader()
     transcription_manager = TranscriptionManager()
+    # prosody_integration = ProsodyIntegration()
     
     download_dir = config_manager.get_download_dir()
     if download_dir:
         file_processor = FileProcessor(download_dir, transcription_manager)
+
+prosody_integration = ProsodyIntegration()
 
 def select_download_directory():
     """Öffnet Dialog zur Auswahl des Download-Verzeichnisses"""
@@ -211,6 +233,8 @@ def start_process():
     if transcribe_enabled_var and transcribe_enabled_var.get():
         if not initialize_transcribers():
             return
+        
+    prosody_integration.apply_settings()
     
     # Prüfe ob URL oder lokale Datei
     if source_type_var.get() == "url":
@@ -309,9 +333,8 @@ def start_gif_animation():
     global gif_frames, gif_running
     
     try:
-        # Suche logo.gif im gleichen Verzeichnis wie die Script-Datei
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        gif_path = os.path.join(script_dir, "logo.gif")
+        
+        gif_path = os.path.join(script_dir,"logo.gif")
         
         if os.path.exists(gif_path):
             gif = Image.open(gif_path)
@@ -579,6 +602,8 @@ def create_transcription_frame():
     # Initial deaktiviert
     toggle_transcription_ui()
 
+prosody_frame = prosody_integration.create_gui_elements(root, row_start=11)
+
 def toggle_transcription_ui():
     """Aktiviert/Deaktiviert Transkriptions-UI Elemente"""
     global export_frame
@@ -750,7 +775,7 @@ try:
 except Exception as e:
     print("Fehler beim Setzen des Icons:", e)
 
-root.geometry("550x850")
+root.geometry("680x960")
 root.configure(bg="#2b2b2b")
 
 # Style-Variablen
@@ -881,6 +906,7 @@ gif_label.grid_remove()
 
 # Transkriptions-Frame
 create_transcription_frame()
+# prosody_integration.create_gui_elements(root, row_start=11)
 
 # Initial UI-Status
 toggle_segment_ui()
