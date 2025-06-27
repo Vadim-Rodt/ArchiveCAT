@@ -40,11 +40,10 @@ video_processor = None
 archive_downloader = None
 transcription_manager = None
 file_processor = None
+prosody_integration = None
 script_dir = os.path.dirname(os.path.abspath(__file__))
 icon_path = os.path.join(script_dir, "logo.png")
-menu_bar = tk.Menu(root)
-root.config(menu=menu_bar)
-add_prosody_menu_items(menu_bar, root)
+
 
 """analyzer = ProsodyAnalyzer()
 results = analyzer.analyze_audio("audio.wav", gender="male")
@@ -87,19 +86,18 @@ segment_entries = []
 def initialize_managers():
     """Initialisiert alle Manager-Klassen"""
     global config_manager, video_processor, archive_downloader, transcription_manager, file_processor
-    prosody_integration.add_to_file_processor(file_processor)
 
     config_manager = ConfigManager()
     video_processor = VideoProcessor()
     archive_downloader = ArchiveDownloader()
     transcription_manager = TranscriptionManager()
-    # prosody_integration = ProsodyIntegration()
+    prosody_integration = ProsodyIntegration()
     
     download_dir = config_manager.get_download_dir()
     if download_dir:
         file_processor = FileProcessor(download_dir, transcription_manager)
+        prosody_integration.add_to_file_processor(file_processor)
 
-prosody_integration = ProsodyIntegration()
 
 def select_download_directory():
     """Öffnet Dialog zur Auswahl des Download-Verzeichnisses"""
@@ -233,8 +231,7 @@ def start_process():
     if transcribe_enabled_var and transcribe_enabled_var.get():
         if not initialize_transcribers():
             return
-        
-    prosody_integration.apply_settings()
+
     
     # Prüfe ob URL oder lokale Datei
     if source_type_var.get() == "url":
@@ -602,8 +599,6 @@ def create_transcription_frame():
     # Initial deaktiviert
     toggle_transcription_ui()
 
-prosody_frame = prosody_integration.create_gui_elements(root, row_start=11)
-
 def toggle_transcription_ui():
     """Aktiviert/Deaktiviert Transkriptions-UI Elemente"""
     global export_frame
@@ -760,11 +755,15 @@ def validate_time_input(char):
 
 # === HAUPTPROGRAMM ===
 
-# Initialisiere Manager
+# Initialisiere
 initialize_managers()
 
-# GUI Setup
-root = tk.Tk()
+prosody_integration = ProsodyIntegration()
+if file_processor:
+    prosody_integration.add_to_file_processor(file_processor)
+
+# GUI Start
+root = tk.Tk() 
 apply_modern_style(root)
 root.title("ArchiveCAT - Complex Annotation Tool")
 
@@ -906,7 +905,12 @@ gif_label.grid_remove()
 
 # Transkriptions-Frame
 create_transcription_frame()
-# prosody_integration.create_gui_elements(root, row_start=11)
+prosody_frame = prosody_integration.create_gui_elements(root, row_start=11)
+menu_bar = tk.Menu(root)
+root.config(menu=menu_bar)
+add_prosody_menu_items(menu_bar, root)
+        
+prosody_integration.apply_settings()
 
 # Initial UI-Status
 toggle_segment_ui()
