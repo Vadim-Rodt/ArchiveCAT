@@ -182,6 +182,21 @@ def threaded_download(url, segment_times, delete_source, queue):
             }
         
         sarcasm_settings = get_sarcasm_settings()
+        print(f"DEBUG: Sarcasm settings in start_process: {sarcasm_settings}")
+        
+        # ENHANCE FILE PROCESSOR WITH SARCASM DETECTION IF ENABLED
+        if sarcasm_settings and sarcasm_settings.get('enabled', False):
+            print("DEBUG: Enhancing file processor with sarcasm detection")
+            try:
+                from sarcasm_detection import enhance_file_processor_with_sarcasm
+                enhance_file_processor_with_sarcasm(file_processor, sarcasm_settings)
+                print("DEBUG: File processor enhanced successfully")
+            except Exception as e:
+                print(f"DEBUG: Error enhancing file processor: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print("DEBUG: Sarcasm detection not enabled or no settings")
 
         # Verarbeite mit FileProcessor
         success = file_processor.process_local_file(
@@ -233,7 +248,7 @@ def process_local_file_thread(file_path, segment_times, delete_source, queue):
         queue.put(f"error:{str(e)}")
 
 def start_process():
-    """Startet den Verarbeitungsprozess"""
+    """Process files with current settings"""
     global video_duration_seconds, gif_frames
     
     # Prüfe Download-Verzeichnis

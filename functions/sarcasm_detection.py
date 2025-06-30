@@ -1106,57 +1106,54 @@ def enhance_file_processor_with_sarcasm(file_processor_instance, sarcasm_setting
     # Store original method
     original_perform = file_processor_instance._perform_transcription
     
-    def enhanced_perform_transcription(audio_path, output_folder, queue, settings, segment_name=""):
-        # Original transcription
-        original_perform(audio_path, output_folder, queue, settings, segment_name)
+    def enhanced_perform_transcription(audio_path, output_folder, queue, settings, sarcasm_settings, segment_name=""):
+        """Enhanced transcription with sarcasm detection"""
+        print(f"DEBUG: Enhanced transcription called with sarcasm_settings: {sarcasm_settings}")
         
-        # Sarcasm detection if enabled
-        if sarcasm_settings.get('enabled', False):
-            if queue:
-                queue.put(f"status:Detecting sarcasm{' for segment' if segment_name else ''}...")
+        # Call original transcription first
+        original_result = enhanced_perform_transcription(audio_path, output_folder, queue, settings, segment_name)
+        
+        # Only do sarcasm detection if enabled
+        if sarcasm_settings and sarcasm_settings.get('enabled', False):
+            print(f"DEBUG: Starting sarcasm analysis for {audio_path}")
             
             try:
-                # Find transcript file
-                transcript_path = None
-                for file in os.listdir(output_folder):
-                    if file.startswith("transkript") and file.endswith(".txt"):
-                        transcript_path = os.path.join(output_folder, file)
-                        break
+                # Create analyzer
+                analyzer = SarcasmAnalyzer()
                 
-                # Get prosody results if available
-                prosody_results = None
-                prosody_files = [f for f in os.listdir(output_folder) if f.startswith("prosody_analysis")]
-                if prosody_files:
-                    prosody_json = next((f for f in prosody_files if f.endswith(".json")), None)
-                    if prosody_json:
-                        with open(os.path.join(output_folder, prosody_json), 'r') as f:
-                            prosody_results = json.load(f)
+                # Find transcript file (adjust path logic as needed)
+                transcript_files = []
+                if os.path.exists(output_folder):
+                    for file in os.listdir(output_folder):
+                        if file.endswith('.txt') and not file.endswith('_sarcasm.txt'):
+                            transcript_files.append(os.path.join(output_folder, file))
                 
-                # Perform sarcasm detection
-                result = detect_sarcasm_for_segment(
-                    audio_path=audio_path,
-                    transcript_path=transcript_path,
-                    prosody_results=prosody_results,
-                    output_dir=output_folder,
-                    segment_name=segment_name
-                )
-                
-                if queue:
-                    confidence_str = f"{result.confidence:.1%}"
-                    if result.is_sarcastic:
-                        queue.put(f"status:Sarcasm detected{segment_name} (Confidence: {confidence_str})")
-                    else:
-                        queue.put(f"status:No sarcasm detected{segment_name}")
-                        
+                if transcript_files:
+                    transcript_path = transcript_files[0]  # Use first transcript found
+                    
+                    # Run sarcasm analysis
+                    sarcasm_result = analyzer.analyze_file(
+                        audio_path=audio_path,
+                        transcript_path=transcript_path,
+                        prosody_results=None,  # You might need to pass prosody results here
+                        output_dir=output_folder
+                    )
+                    
+                    print(f"DEBUG: Sarcasm analysis completed: {sarcasm_result}")
+                    
+                    # Update queue with sarcasm results
+                    if hasattr(queue, 'put'):
+                        queue.put(f"Sarcasm analysis completed: {'Sarcastic' if getattr(sarcasm_result, 'is_sarcastic', False) else 'Not sarcastic'}")
+                    
             except Exception as e:
-                print(f"Sarcasm detection error: {e}")
-                if queue:
-                    queue.put(f"status:Sarcasm detection failed{segment_name}")
-    
-    # Replace method
-    file_processor_instance._perform_transcription = enhanced_perform_transcription
-    
-    return file_processor_instance
+                print(f"DEBUG: Sarcasm analysis failed: {e}")
+                import traceback
+                traceback.print_exc()
+                
+                if hasattr(queue, 'put'):
+                    queue.put(f"Sarcasm analysis failed: {e}")
+        
+        return original_result
 
 
 # Cost-efficient model recommendations
