@@ -15,6 +15,8 @@ from PIL import Image, ImageTk, ImageSequence
 import threading
 from pathlib import Path
 
+
+
 # Eigene Module
 from modern_style import apply_modern_style
 from config_manager import ConfigManager
@@ -24,6 +26,7 @@ from transcription_manager import TranscriptionManager
 from file_processor import FileProcessor
 from audio_video_splitter import split_video_audio
 from prosody_analyzer import ProsodyAnalyzer
+from sarcasm_detection import SarcasmAnalyzer, enhance_file_processor_with_sarcasm
 
 from prosody_integration import (
     ProsodyIntegration, 
@@ -44,6 +47,12 @@ prosody_integration = None
 script_dir = os.path.dirname(os.path.abspath(__file__))
 icon_path = os.path.join(script_dir, "logo.png")
 
+# Sarcasm Detection Variables
+sarcasm_enabled_var = None
+sarcasm_acoustic_var = None
+sarcasm_text_var = None
+sarcasm_prosodic_var = None
+sarcasm_frame = None
 
 """analyzer = ProsodyAnalyzer()
 results = analyzer.analyze_audio("audio.wav", gender="male")
@@ -85,7 +94,7 @@ segment_entries = []
 
 def initialize_managers():
     """Initialisiert alle Manager-Klassen"""
-    global config_manager, video_processor, archive_downloader, transcription_manager, file_processor
+    global config_manager, video_processor, archive_downloader, transcription_manager, file_processor, prosody_integration
 
     config_manager = ConfigManager()
     video_processor = VideoProcessor()
@@ -599,6 +608,193 @@ def create_transcription_frame():
     # Initial deaktiviert
     toggle_transcription_ui()
 
+# === ADD THIS FUNCTION AFTER create_transcription_frame() ===
+
+def create_sarcasm_frame():
+    """Erstellt den Sarcasm Detection Bereich der GUI"""
+    global sarcasm_enabled_var, sarcasm_acoustic_var, sarcasm_text_var, sarcasm_prosodic_var
+    global sarcasm_frame
+    
+    # Sarcasm Detection Frame
+    sarcasm_main_frame = tk.LabelFrame(
+        root, 
+        text="Sarcasm Detection (Experimental)", 
+        fg=label_fg, 
+        bg="#2b2b2b", 
+        font=("Segoe UI", 11, "bold")
+    )
+    sarcasm_main_frame.grid(row=12, column=0, columnspan=4, pady=10, padx=20, sticky="ew")
+    
+    # Main enable checkbox
+    sarcasm_enabled_var = tk.BooleanVar(value=False)
+    sarcasm_checkbox = tk.Checkbutton(
+        sarcasm_main_frame,
+        text="Enable Sarcasm Detection",
+        variable=sarcasm_enabled_var,
+        command=toggle_sarcasm_ui,
+        fg=label_fg,
+        bg="#2b2b2b",
+        font=font_style,
+        selectcolor="#2b2b2b",
+        activebackground="#2b2b2b"
+    )
+    sarcasm_checkbox.grid(row=0, column=0, columnspan=3, sticky="w", padx=10, pady=5)
+    
+    # Modalities Frame
+    sarcasm_frame = tk.LabelFrame(
+        sarcasm_main_frame,
+        text="Detection Modalities",
+        fg=label_fg,
+        bg="#2b2b2b",
+        font=("Segoe UI", 10, "bold")
+    )
+    sarcasm_frame.grid(row=1, column=0, columnspan=3, padx=10, pady=10, sticky="ew")
+    
+    # Modality checkboxes
+    sarcasm_acoustic_var = tk.BooleanVar(value=True)
+    acoustic_checkbox = tk.Checkbutton(
+        sarcasm_frame,
+        text="Acoustic Analysis\n(Pitch, tone, rhythm patterns)",
+        variable=sarcasm_acoustic_var,
+        justify="left",
+        fg=label_fg,
+        bg="#2b2b2b",
+        font=("Segoe UI", 9),
+        selectcolor="#2b2b2b",
+        activebackground="#2b2b2b"
+    )
+    acoustic_checkbox.grid(row=0, column=0, sticky="w", padx=10, pady=5)
+    
+    sarcasm_text_var = tk.BooleanVar(value=True)
+    text_checkbox = tk.Checkbutton(
+        sarcasm_frame,
+        text="Text Analysis\n(Sentiment, patterns, context)",
+        variable=sarcasm_text_var,
+        justify="left",
+        fg=label_fg,
+        bg="#2b2b2b",
+        font=("Segoe UI", 9),
+        selectcolor="#2b2b2b",
+        activebackground="#2b2b2b"
+    )
+    text_checkbox.grid(row=0, column=1, sticky="w", padx=10, pady=5)
+    
+    sarcasm_prosodic_var = tk.BooleanVar(value=True)
+    prosodic_checkbox = tk.Checkbutton(
+        sarcasm_frame,
+        text="Prosodic Integration\n(Voice quality, pauses, rhythm)",
+        variable=sarcasm_prosodic_var,
+        justify="left",
+        fg=label_fg,
+        bg="#2b2b2b",
+        font=("Segoe UI", 9),
+        selectcolor="#2b2b2b",
+        activebackground="#2b2b2b"
+    )
+    prosodic_checkbox.grid(row=0, column=2, sticky="w", padx=10, pady=5)
+    
+    # Configuration info
+    config_frame = tk.Frame(sarcasm_frame, bg="#2b2b2b")
+    config_frame.grid(row=1, column=0, columnspan=3, padx=10, pady=5, sticky="ew")
+    
+    # Weights display
+    tk.Label(
+        config_frame,
+        text="Modality Weights:",
+        fg=label_fg,
+        bg="#2b2b2b",
+        font=("Segoe UI", 9, "bold")
+    ).grid(row=0, column=0, sticky="w", padx=5)
+    
+    weights_label = tk.Label(
+        config_frame,
+        text="Acoustic: 40% | Text: 40% | Prosodic: 20%",
+        fg="#888888",
+        bg="#2b2b2b",
+        font=("Segoe UI", 8)
+    )
+    weights_label.grid(row=0, column=1, sticky="w", padx=10)
+    
+    # Info section
+    info_text = """Features:
+    • Multi-modal sarcasm detection using acoustic, text, and prosodic features
+    • Combines rule-based patterns with ML models for high accuracy
+    • Confidence scoring and detailed reporting
+    • Integration with existing transcription and prosody analysis"""
+    
+    info_label = tk.Label(
+        sarcasm_main_frame,
+        text=info_text,
+        fg="#888888",
+        bg="#2b2b2b",
+        font=("Segoe UI", 9),
+        justify="left"
+    )
+    info_label.grid(row=2, column=0, columnspan=3, padx=10, pady=5, sticky="w")
+    
+    # Warning for experimental feature
+    warning_label = tk.Label(
+        sarcasm_main_frame,
+        text="⚠️ Experimental Feature: Results may vary depending on audio quality and speech patterns",
+        fg="#ffaa00",
+        bg="#2b2b2b",
+        font=("Segoe UI", 8, "italic")
+    )
+    warning_label.grid(row=3, column=0, columnspan=3, padx=10, pady=5, sticky="w")
+    
+    # Initially disabled
+    toggle_sarcasm_ui()
+    
+    return sarcasm_main_frame
+
+def toggle_sarcasm_ui():
+    """Aktiviert/Deaktiviert Sarcasm Detection UI Elemente"""
+    global sarcasm_frame
+    
+    if sarcasm_enabled_var and sarcasm_enabled_var.get():
+        # Enable all modality checkboxes
+        for child in sarcasm_frame.winfo_children():
+            if isinstance(child, tk.Checkbutton):
+                child.configure(state="normal")
+            elif isinstance(child, tk.Frame):
+                for subchild in child.winfo_children():
+                    if hasattr(subchild, 'configure'):
+                        try:
+                            subchild.configure(state="normal")
+                        except:
+                            pass
+    else:
+        # Disable all modality checkboxes
+        for child in sarcasm_frame.winfo_children():
+            if isinstance(child, tk.Checkbutton):
+                child.configure(state="disabled")
+            elif isinstance(child, tk.Frame):
+                for subchild in child.winfo_children():
+                    if hasattr(subchild, 'configure'):
+                        try:
+                            subchild.configure(state="disabled")
+                        except:
+                            pass
+
+def get_sarcasm_settings():
+    """Returns current sarcasm detection settings"""
+    if not sarcasm_enabled_var or not sarcasm_enabled_var.get():
+        return {'enabled': False}
+    
+    return {
+        'enabled': True,
+        'modalities': {
+            'acoustic': sarcasm_acoustic_var.get() if sarcasm_acoustic_var else True,
+            'text': sarcasm_text_var.get() if sarcasm_text_var else True,
+            'prosodic': sarcasm_prosodic_var.get() if sarcasm_prosodic_var else True
+        },
+        'weights': {
+            'acoustic': 0.4 if sarcasm_acoustic_var and sarcasm_acoustic_var.get() else 0.0,
+            'text': 0.4 if sarcasm_text_var and sarcasm_text_var.get() else 0.0,
+            'prosodic': 0.2 if sarcasm_prosodic_var and sarcasm_prosodic_var.get() else 0.0
+        }
+    }
+
 def toggle_transcription_ui():
     """Aktiviert/Deaktiviert Transkriptions-UI Elemente"""
     global export_frame
@@ -765,7 +961,7 @@ if file_processor:
 # GUI Start
 root = tk.Tk() 
 apply_modern_style(root)
-root.title("ArchiveCAT - Complex Annotation Tool")
+root.title("CorpusCAT - Complex Annotation Tool")
 
 # Fenstericon
 try:
@@ -906,6 +1102,9 @@ gif_label.grid_remove()
 # Transkriptions-Frame
 create_transcription_frame()
 prosody_frame = prosody_integration.create_gui_elements(root, row_start=11)
+
+sarcasm_gui_frame = create_sarcasm_frame()
+
 menu_bar = tk.Menu(root)
 root.config(menu=menu_bar)
 add_prosody_menu_items(menu_bar, root)

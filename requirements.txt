@@ -2,6 +2,7 @@ librosa
 numpy
 openai
 pandas
+parselmouth
 pillow
 praat-parselmouth
 pyannote-audio
@@ -11,5 +12,5 @@ scipy
 seaborn
 selenium
 torch
+transformers
 webdriver-manager
-

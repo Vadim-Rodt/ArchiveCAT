@@ -11,7 +11,7 @@ PALETTE = {
     "border":  "#101112",   # Border color
     "input_bg": "#282c34",  # Entry background
     "input_fg": "#e8e8e8",  # Entry foreground
-    "label_fg": "#dddddd",  # Label color
+    "label_fg": "#111315",  # Label color
     "error":   "#ff3333",   # Error red
     "success": "#0ba11d",   # Success green
     "warn":    "#ffb800",   # Warning yellow
