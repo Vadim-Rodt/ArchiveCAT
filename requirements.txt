@@ -11,3 +11,5 @@ scipy
 seaborn
 selenium
 torch
+webdriver-manager
+

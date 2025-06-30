@@ -774,7 +774,7 @@ try:
 except Exception as e:
     print("Fehler beim Setzen des Icons:", e)
 
-root.geometry("680x960")
+root.geometry("680x1200")
 root.configure(bg="#2b2b2b")
 
 # Style-Variablen
