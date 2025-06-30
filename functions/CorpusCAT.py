@@ -107,6 +107,9 @@ def initialize_managers():
         file_processor = FileProcessor(download_dir, transcription_manager)
         prosody_integration.add_to_file_processor(file_processor)
 
+        from sarcasm_detection import enhance_file_processor_with_sarcasm
+        enhance_file_processor_with_sarcasm(file_processor)
+
 
 def select_download_directory():
     """Öffnet Dialog zur Auswahl des Download-Verzeichnisses"""
@@ -178,10 +181,12 @@ def threaded_download(url, segment_times, delete_source, queue):
                 }
             }
         
+        sarcasm_settings = get_sarcasm_settings()
+
         # Verarbeite mit FileProcessor
         success = file_processor.process_local_file(
             result['video_path'], segment_times, delete_source, 
-            queue, transcription_settings
+            queue, transcription_settings, sarcasm_settings
         )
         
         if success:
@@ -741,6 +746,24 @@ def create_sarcasm_frame():
         font=("Segoe UI", 8, "italic")
     )
     warning_label.grid(row=3, column=0, columnspan=3, padx=10, pady=5, sticky="w")
+
+    test_frame = tk.Frame(sarcasm_main_frame, bg="#2b2b2b")
+    test_frame.grid(row=4, column=0, columnspan=3, padx=10, pady=10, sticky="ew")
+
+    test_sarcasm_btn = ttk.Button(
+        test_frame,
+        text="🔍 Test Sarcasm Detection",
+        command=test_sarcasm_detection
+    )
+    test_sarcasm_btn.grid(row=0, column=0, padx=5)
+    
+    # Dependencies check button
+    check_deps_btn = ttk.Button(
+        test_frame,
+        text="📋 Check Dependencies",
+        command=check_sarcasm_dependencies
+    )
+    check_deps_btn.grid(row=0, column=1, padx=5)
     
     # Initially disabled
     toggle_sarcasm_ui()
@@ -763,6 +786,15 @@ def toggle_sarcasm_ui():
                             subchild.configure(state="normal")
                         except:
                             pass
+        
+        # Enable test buttons (ADD THIS)
+        for widget in root.grid_slaves():
+            if isinstance(widget, tk.LabelFrame) and "Sarcasm Detection" in widget.cget("text"):
+                for child in widget.winfo_children():
+                    if isinstance(child, tk.Frame):  # test_frame
+                        for btn in child.winfo_children():
+                            if isinstance(btn, ttk.Button):
+                                btn.configure(state="normal")
     else:
         # Disable all modality checkboxes
         for child in sarcasm_frame.winfo_children():
@@ -775,7 +807,15 @@ def toggle_sarcasm_ui():
                             subchild.configure(state="disabled")
                         except:
                             pass
-
+        
+        # Disable test buttons (ADD THIS)
+        for widget in root.grid_slaves():
+            if isinstance(widget, tk.LabelFrame) and "Sarcasm Detection" in widget.cget("text"):
+                for child in widget.winfo_children():
+                    if isinstance(child, tk.Frame):  # test_frame
+                        for btn in child.winfo_children():
+                            if isinstance(btn, ttk.Button):
+                                btn.configure(state="disabled")
 def get_sarcasm_settings():
     """Returns current sarcasm detection settings"""
     if not sarcasm_enabled_var or not sarcasm_enabled_var.get():
@@ -794,6 +834,104 @@ def get_sarcasm_settings():
             'prosodic': 0.2 if sarcasm_prosodic_var and sarcasm_prosodic_var.get() else 0.0
         }
     }
+
+def test_sarcasm_detection():
+    """Test sarcasm detection functionality"""
+    try:
+        from sarcasm_detection import SarcasmAnalyzer
+        analyzer = SarcasmAnalyzer()
+        
+        # Test with simple text that should trigger sarcasm detection
+        test_text = "Oh great, another wonderful meeting. This is exactly what I needed today."
+        
+        # Create a temporary text file for testing
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
+            f.write(test_text)
+            temp_file = f.name
+        
+        try:
+            result = analyzer.analyze_file(
+                audio_path=None,
+                transcript_path=temp_file,
+                prosody_results=None,
+                output_dir=None
+            )
+            
+            # Clean up temp file
+            os.unlink(temp_file)
+            
+            message = f"""Sarcasm Detection Test Results:
+            
+Text: "{test_text}"
+
+Results:
+• Sarcastic: {'YES' if result.is_sarcastic else 'NO'}
+• Confidence: {result.confidence:.1%}
+• Detection Method: {result.detection_method}
+• Indicators: {', '.join(result.indicators) if result.indicators else 'None'}
+
+Test Status: SUCCESS ✓"""
+            
+            print("Sarcasm detection test successful!")
+            messagebox.showinfo("Sarcasm Test Results", message)
+            
+        except Exception as e:
+            # Clean up temp file on error
+            try:
+                os.unlink(temp_file)
+            except:
+                pass
+            raise e
+            
+    except ImportError as e:
+        error_msg = f"Missing dependencies for sarcasm detection:\n{e}\n\nInstall with: pip install transformers torch scikit-learn librosa praat-parselmouth"
+        print(f"Sarcasm detection test failed: {error_msg}")
+        messagebox.showerror("Missing Dependencies", error_msg)
+        
+    except Exception as e:
+        print(f"Sarcasm detection test failed: {e}")
+        messagebox.showerror("Test Failed", f"Sarcasm detection error:\n{e}")
+
+def check_sarcasm_dependencies():
+    """Check if sarcasm detection dependencies are available"""
+    missing_deps = []
+    
+    try:
+        import transformers
+    except ImportError:
+        missing_deps.append("transformers")
+    
+    try:
+        import torch
+    except ImportError:
+        missing_deps.append("torch")
+    
+    try:
+        import sklearn
+    except ImportError:
+        missing_deps.append("scikit-learn")
+    
+    try:
+        import librosa
+    except ImportError:
+        missing_deps.append("librosa")
+    
+    try:
+        import parselmouth
+    except ImportError:
+        missing_deps.append("praat-parselmouth")
+    
+    if missing_deps:
+        messagebox.showwarning(
+            "Missing Dependencies",
+            f"Sarcasm detection requires the following packages:\n" +
+            "\n".join(f"• {dep}" for dep in missing_deps) +
+            f"\n\nInstall with: pip install {' '.join(missing_deps)}"
+        )
+        return False
+    
+    return True
 
 def toggle_transcription_ui():
     """Aktiviert/Deaktiviert Transkriptions-UI Elemente"""
