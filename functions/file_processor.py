@@ -23,8 +23,7 @@ class FileProcessor:
     
     def process_local_file(self, file_path: str, segment_times: List[Tuple[str, str]], 
                           delete_source: bool, queue: Optional[Queue] = None,
-                          transcription_settings: Optional[Dict] = None,
-                          sarcasm_settings: Optional[Dict] = None) -> bool:
+                          transcription_settings: Optional[Dict] = None) -> bool:
         """
         Verarbeitet eine lokale Video-Datei
         
@@ -65,12 +64,12 @@ class FileProcessor:
             
             if is_full_video:
                 success = self._process_full_video(
-                    file_path, video_folder, filename, queue, transcription_settings, sarcasm_settings
+                    file_path, video_folder, filename, queue, transcription_settings,
                 )
             else:
                 success = self._process_segments(
                     file_path, video_folder, title_text, ext, segment_times, 
-                    queue, transcription_settings, sarcasm_settings
+                    queue, transcription_settings
                 )
             
             if success:
@@ -88,8 +87,7 @@ class FileProcessor:
             return False
     
     def _process_full_video(self, file_path: str, video_folder: str, filename: str,
-                           queue: Optional[Queue], transcription_settings: Optional[Dict],
-                           sarcasm_settings: Optional[Dict]) -> bool:
+                           queue: Optional[Queue], transcription_settings: Optional[Dict]) -> bool:
         """Verarbeitet das gesamte Video ohne Segmentierung"""
         segment_folder = os.path.join(video_folder, "Gesamtvideo")
         os.makedirs(segment_folder, exist_ok=True)
@@ -116,7 +114,7 @@ class FileProcessor:
             if result['audio_path'] and transcription_settings and transcription_settings.get('enabled'):
                 self._perform_transcription(
                     result['audio_path'], segment_folder, queue, 
-                    transcription_settings, "", sarcasm_settings
+                    transcription_settings, ""
                 )
             
             return True
@@ -128,8 +126,7 @@ class FileProcessor:
     
     def _process_segments(self, file_path: str, video_folder: str, title_text: str, 
                          ext: str, segment_times: List[Tuple[str, str]], 
-                         queue: Optional[Queue], transcription_settings: Optional[Dict],
-                         sarcasm_settings: Optional[Dict]) -> bool:
+                         queue: Optional[Queue], transcription_settings: Optional[Dict]) -> bool:
         """Verarbeitet Video in Segmenten"""
         successful_segments = 0
         total_segments = len(segment_times)
@@ -167,7 +164,7 @@ class FileProcessor:
                         if transcription_settings and transcription_settings.get('enabled'):
                             self._perform_transcription(
                                 result['audio_path'], segment_folder, queue,
-                                transcription_settings, f"_segment_{i}", sarcasm_settings
+                                transcription_settings, f"_segment_{i}"
                             )
                 else:
                     print(f"Fehler bei Audio-Extraktion für Segment {i}")
@@ -191,8 +188,7 @@ class FileProcessor:
         return successful_segments == total_segments
     
     def _perform_transcription(self, audio_path: str, output_folder: str, 
-                              queue: Optional[Queue], settings: Dict, segment_name: str = "",
-                              sarcasm_settings: Optional[Dict] = None):
+                              queue: Optional[Queue], settings: Dict, segment_name: str = ""):
         """Führt Transkription durch"""
         if not self.transcription_manager or not self.transcription_manager.is_initialized:
             return
@@ -224,11 +220,6 @@ class FileProcessor:
                     else:
                         queue.put(f"status:Transkription{segment_name} erstellt")
 
-                if sarcasm_settings and sarcasm_settings.get('enabled', False):
-                    self._perform_sarcasm_detection(
-                        audio_path, output_folder, queue, sarcasm_settings, segment_name
-                    )
-
             else:
                 if queue:
                     queue.put(f"status:Transkription fehlgeschlagen: {result.get('error', 'Unbekannter Fehler')}")
@@ -237,134 +228,6 @@ class FileProcessor:
             print(f"Transkriptionsfehler: {e}")
             if queue:
                 queue.put(f"status:Transkription fehlgeschlagen: {str(e)}")
-
-    def _perform_sarcasm_detection(self, audio_path: str, output_folder: str, 
-                              queue: Optional[Queue], sarcasm_settings: Dict, segment_name: str = ""):
-        """
-        Führt Sarcasm Detection durch
-        
-        Args:
-            audio_path: Pfad zur Audio-Datei
-            output_folder: Ausgabe-Ordner
-            queue: Queue für Status-Updates
-            sarcasm_settings: Sarcasm Detection Einstellungen
-            segment_name: Segment-Name für Ausgabe
-        """
-        try:
-            # Import here to avoid circular imports
-            from sarcasm_detection import SarcasmDetector, SarcasmSettings
-            
-            # Create settings object
-            settings = SarcasmSettings(
-                enabled=sarcasm_settings.get('enabled', False),
-                modalities=sarcasm_settings.get('modalities', {
-                    'acoustic': True, 'text': True, 'prosodic': True
-                }),
-                weights=sarcasm_settings.get('weights', {
-                    'acoustic': 0.4, 'text': 0.4, 'prosodic': 0.2
-                }),
-                confidence_threshold=sarcasm_settings.get('confidence_threshold', 0.5)
-            )
-        
-            if not settings.enabled:
-                return
-            
-            active_mods = settings.get_active_modalities()
-            if not active_mods:
-                if queue:
-                    queue.put(f"status:No sarcasm modalities enabled{segment_name}")
-                return
-            
-            if queue:
-                mods_str = ", ".join(active_mods)
-                queue.put(f"status:Detecting sarcasm using {mods_str}{' for segment' if segment_name else ''}...")
-            
-            # Initialize detector
-            detector = SarcasmDetector(settings)
-            
-            # Find transcript file if text analysis is enabled
-            transcript_text = None
-            if settings.modalities.get('text', False):
-                for file in os.listdir(output_folder):
-                    if file.startswith("transkript") and file.endswith(".txt"):
-                        transcript_path = os.path.join(output_folder, file)
-                        try:
-                            with open(transcript_path, 'r', encoding='utf-8') as f:
-                                transcript_text = f.read()
-                            break
-                        except Exception as e:
-                            print(f"Error reading transcript: {e}")
-            
-            # Get prosody results if prosodic analysis is enabled
-            prosody_results = None
-            if settings.modalities.get('prosodic', False):
-                prosody_files = [f for f in os.listdir(output_folder) 
-                            if f.startswith("prosody_analysis") and f.endswith(".json")]
-                if prosody_files:
-                    prosody_json = prosody_files[0]  # Take first match
-                    try:
-                        with open(os.path.join(output_folder, prosody_json), 'r', encoding='utf-8') as f:
-                            prosody_data = json.load(f)
-                            # Extract the results part if it's in the ArchiveCAT format
-                            if 'results' in prosody_data:
-                                prosody_results = prosody_data
-                            else:
-                                prosody_results = {'success': True, 'results': prosody_data}
-                    except Exception as e:
-                        print(f"Error reading prosody results: {e}")
-            
-            # Determine audio path for acoustic analysis
-            audio_for_analysis = None
-            if settings.modalities.get('acoustic', False):
-                if audio_path and os.path.exists(audio_path):
-                    audio_for_analysis = audio_path
-                else:
-                    # Try to find the audio file in the output folder
-                    for file in os.listdir(output_folder):
-                        if file.endswith("_audio.wav"):
-                            audio_for_analysis = os.path.join(output_folder, file)
-                            break
-            
-            # Perform sarcasm detection
-            result = detector.detect_sarcasm(
-                audio_path=audio_for_analysis,
-                transcript=transcript_text,
-                prosody_results=prosody_results
-            )
-            
-            # Save results
-            output_base = os.path.join(output_folder, f"sarcasm_analysis{segment_name}")
-            detector.save_results(result, output_base)
-            
-            # Update queue with results
-            if queue:
-                confidence_str = f"{result.confidence:.1%}"
-                method_str = result.detection_method.replace('_', ' ').title()
-                
-                if result.is_sarcastic:
-                    queue.put(f"status:🎭 Sarcasm detected{segment_name} (Confidence: {confidence_str}, Method: {method_str})")
-                else:
-                    queue.put(f"status:No sarcasm detected{segment_name} (Confidence: {confidence_str})")
-            
-            # Log detailed results
-            print(f"Sarcasm Detection Results{segment_name}:")
-            print(f"  - Sarcastic: {result.is_sarcastic}")
-            print(f"  - Confidence: {result.confidence:.1%}")
-            print(f"  - Active Modalities: {result.metadata.get('active_modalities', [])}")
-            print(f"  - Acoustic Score: {result.acoustic_score:.3f}")
-            print(f"  - Text Score: {result.text_score:.3f}")
-            print(f"  - Detection Method: {result.detection_method}")
-            if result.indicators:
-                print(f"  - Top Indicators: {', '.join(result.indicators[:3])}")
-            
-        except ImportError as e:
-            print(f"Sarcasm detection not available: {e}")
-            if queue:
-                queue.put(f"status:Sarcasm detection module not available{segment_name}")
-        except Exception as e:
-            print(f"Sarcasm detection error: {e}")
-            if queue:
-                queue.put(f"status:Sarcasm detection failed{segment_name}: {str(e)}")
 
     
     def _sanitize_filename(self, name: str, max_length: int = 50) -> str:
