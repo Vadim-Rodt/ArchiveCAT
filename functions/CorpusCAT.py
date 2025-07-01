@@ -172,7 +172,6 @@ def threaded_download(url, segment_times, delete_source, queue):
                 }
             }
     
-
         # Verarbeite mit FileProcessor
         success = file_processor.process_local_file(
             result['video_path'], segment_times, delete_source, 
@@ -180,6 +179,40 @@ def threaded_download(url, segment_times, delete_source, queue):
         )
         
         if success:
+            # NEU: METADATA-EXTRAKTION HIER HINZUFÜGEN
+            try:
+                if queue:
+                    queue.put("status:Extrahiere Metadata...")
+                
+                # Zeitstempel aus segment_times extrahieren
+                timestamp_start = ""
+                timestamp_end = ""
+                if segment_times:
+                    timestamp_start = segment_times[0][0] if segment_times[0] else ""
+                    timestamp_end = segment_times[0][1] if segment_times[0] else ""
+                
+                # Basis-Dateiname aus result extrahieren
+                base_filename = os.path.basename(result['video_path'])
+                output_dir = result['video_folder']  # Verwende den Video-Ordner
+                
+                # Metadata extrahieren
+                csv_path = metadata_processor.process_video_metadata(
+                    source_url=url,
+                    output_dir=output_dir,
+                    base_filename=base_filename,
+                    timestamp_start=timestamp_start,
+                    timestamp_end=timestamp_end
+                )
+                
+                if csv_path:
+                    queue.put(f"status:Metadata CSV erstellt: {os.path.basename(csv_path)}")
+                else:
+                    queue.put("status:Warnung: Metadata-Extraktion fehlgeschlagen")
+                    
+            except Exception as e:
+                print(f"Metadata-Extraktion fehlgeschlagen: {e}")
+                queue.put(f"status:Warnung: Metadata-Fehler: {str(e)}")
+            
             queue.put("done")
         else:
             queue.put("error:Segmentierung fehlgeschlagen")
@@ -216,7 +249,48 @@ def process_local_file_thread(file_path, segment_times, delete_source, queue):
             queue, transcription_settings
         )
         
-        if not success:
+        if success:
+            # NEU: METADATA-EXTRAKTION AUCH FÜR LOKALE DATEIEN
+            try:
+                if queue:
+                    queue.put("status:Extrahiere Metadata...")
+                
+                # Zeitstempel aus segment_times extrahieren
+                timestamp_start = ""
+                timestamp_end = ""
+                if segment_times:
+                    timestamp_start = segment_times[0][0] if segment_times[0] else ""
+                    timestamp_end = segment_times[0][1] if segment_times[0] else ""
+                
+                # Für lokale Dateien: Erstelle Output-Verzeichnis basierend auf Dateiname
+                filename = os.path.basename(file_path)
+                title_text = os.path.splitext(filename)[0]
+                # Bereinige Dateiname (gleiche Logik wie in file_processor.py)
+                import re
+                title_text = re.sub(r'[\\/*?:"<>|]', '', title_text).strip()[:50]
+                
+                output_dir = os.path.join(download_dir, title_text)
+                
+                # Metadata extrahieren (ohne URL für lokale Dateien)
+                csv_path = metadata_processor.extract_metadata_from_files(
+                    output_dir=output_dir,
+                    base_filename=filename,
+                    source_url="",  # Keine URL für lokale Dateien
+                    timestamp_start=timestamp_start,
+                    timestamp_end=timestamp_end
+                )
+                
+                if csv_path:
+                    queue.put(f"status:Metadata CSV erstellt: {os.path.basename(csv_path)}")
+                else:
+                    queue.put("status:Warnung: Metadata-Extraktion fehlgeschlagen")
+                    
+            except Exception as e:
+                print(f"Metadata-Extraktion fehlgeschlagen: {e}")
+                queue.put(f"status:Warnung: Metadata-Fehler: {str(e)}")
+            
+            queue.put("done")
+        else:
             queue.put("error:Verarbeitung fehlgeschlagen")
             
     except Exception as e:
@@ -604,6 +678,51 @@ def create_transcription_frame():
     toggle_transcription_ui()
 
 
+def create_metadata_option():
+    """Erstellt Checkbox für Metadata-Extraktion"""
+    global metadata_enabled_var
+    
+    # Metadata-Frame (nach dem Transkriptions-Frame)
+    metadata_frame = tk.LabelFrame(
+        root, 
+        text="Metadata-Extraktion", 
+        fg=label_fg, 
+        bg="#2b2b2b", 
+        font=("Segoe UI", 11, "bold")
+    )
+    metadata_frame.grid(row=11, column=0, columnspan=4, pady=10, padx=20, sticky="ew")
+    
+    # Metadata aktivieren
+    metadata_enabled_var = tk.BooleanVar(value=True)
+    metadata_checkbox = tk.Checkbutton(
+        metadata_frame,
+        text="Metadata CSV automatisch erstellen",
+        variable=metadata_enabled_var,
+        fg=label_fg,
+        bg="#2b2b2b",
+        font=font_style,
+        selectcolor="#2b2b2b",
+        activebackground="#2b2b2b"
+    )
+    metadata_checkbox.grid(row=0, column=0, columnspan=3, sticky="w", padx=10, pady=5)
+    
+    # Info Label
+    info_text = """Hinweise:
+    • Extrahiert automatisch Titel, Creator, Upload-Datum etc. von Archive.org
+    • Fügt Transkript und Prosody-Werte hinzu falls verfügbar
+    • Erstellt CSV-Datei mit dem Suffix "_metadata"
+    • Funktioniert auch für lokale Dateien (ohne Online-Metadaten)"""
+    
+    info_label = tk.Label(
+        metadata_frame,
+        text=info_text,
+        fg="#888888",
+        bg="#2b2b2b",
+        font=("Segoe UI", 9),
+        justify="left"
+    )
+    info_label.grid(row=1, column=0, columnspan=3, padx=10, pady=10, sticky="w")
+
 def toggle_transcription_ui():
     """Aktiviert/Deaktiviert Transkriptions-UI Elemente"""
     global export_frame
@@ -768,7 +887,7 @@ if file_processor:
     prosody_integration.add_to_file_processor(file_processor)
 
 # GUI Start
-root = tk.Tk() 
+root = tk.Tk()
 apply_modern_style(root)
 root.title("CorpusCAT - Complex Annotation Tool")
 
@@ -779,7 +898,7 @@ try:
 except Exception as e:
     print("Fehler beim Setzen des Icons:", e)
 
-root.geometry("680x1200")
+root.geometry("720x1400")
 root.configure(bg="#2b2b2b")
 
 # Style-Variablen

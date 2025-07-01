@@ -214,15 +214,6 @@ class MetadataExtractor:
             return ""
     
     def extract_prosody_values(self, prosody_path: str) -> Tuple[str, str]:
-        """
-        Extract arousal level and valence from prosody analysis file
-        
-        Args:
-            prosody_path: Path to prosody analysis file
-            
-        Returns:
-            Tuple of (arousal_level, valence) or ("", "") if not found
-        """
         try:
             if not os.path.exists(prosody_path):
                 return "", ""
@@ -230,23 +221,37 @@ class MetadataExtractor:
             with open(prosody_path, 'r', encoding='utf-8') as f:
                 content = f.read()
             
+            # Mehrere Suchmuster für Arousal
+            arousal_patterns = [
+                r'Arousal\s*Level[:\s]+([^\n\r]+)',
+                r'Overall\s+Arousal[:\s]+([^\n\r]+)',
+                r'Erregung[:\s]+([^\n\r]+)'
+            ]
+            
             arousal_level = ""
+            for pattern in arousal_patterns:
+                match = re.search(pattern, content, re.IGNORECASE)
+                if match:
+                    arousal_level = match.group(1).strip()
+                    break
+            
+            # Mehrere Suchmuster für Valence
+            valence_patterns = [
+                r'Valence[:\s]+([^\n\r]+)',
+                r'Overall\s+Valence[:\s]+([^\n\r]+)',
+                r'Valenz[:\s]+([^\n\r]+)'
+            ]
+            
             valence = ""
-            
-            # Extract arousal level (look for patterns like "Arousal Level: High")
-            arousal_match = re.search(r'Arousal\s+Level[:\s]+([^\n\r]+)', content, re.IGNORECASE)
-            if arousal_match:
-                arousal_level = arousal_match.group(1).strip()
-            
-            # Extract valence (look for patterns like "Valence: Positive")
-            valence_match = re.search(r'Valence[:\s]+([^\n\r]+)', content, re.IGNORECASE)
-            if valence_match:
-                valence = valence_match.group(1).strip()
+            for pattern in valence_patterns:
+                match = re.search(pattern, content, re.IGNORECASE)
+                if match:
+                    valence = match.group(1).strip()
+                    break
             
             return arousal_level, valence
             
         except Exception as e:
-            self.logger.error(f"Error extracting prosody values from {prosody_path}: {e}")
             return "", ""
     
     def create_metadata_record(self, 
@@ -379,37 +384,58 @@ class MetadataProcessor:
         self.logger = logging.getLogger(__name__)
     
     def process_video_metadata(self,
-                             source_url: str,
-                             output_dir: str,
-                             base_filename: str,
-                             timestamp_start: str = "",
-                             timestamp_end: str = "",
-                             html_content: str = None) -> Optional[str]:
+                            source_url: str,
+                            output_dir: str,
+                            base_filename: str,
+                            timestamp_start: str = "",
+                            timestamp_end: str = "",
+                            html_content: str = None) -> Optional[str]:
         """
         Process metadata for a video and save to CSV
-        
-        Args:
-            source_url: Original video URL
-            output_dir: Output directory for CSV file
-            base_filename: Base filename for the video
-            timestamp_start: Start timestamp
-            timestamp_end: End timestamp
-            html_content: Optional HTML content (will fetch if not provided)
-            
-        Returns:
-            Path to created CSV file or None if failed
         """
         try:
-            # Generate paths
-            transcript_path = os.path.join(output_dir, f"{os.path.splitext(base_filename)[0]}.txt")
-            prosody_path = os.path.join(output_dir, "prosody_analysis.txt")
+            print(f"DEBUG: Looking for files in: {output_dir}")
+            
+            # Find transcript files - look for multiple possible patterns
+            transcript_files = []
+            prosody_files = []
+            
+            # Search recursively in output directory and subdirectories
+            for root_dir, dirs, files in os.walk(output_dir):
+                print(f"DEBUG: Searching in directory: {root_dir}")
+                print(f"DEBUG: Files found: {files}")
+                
+                for file in files:
+                    file_path = os.path.join(root_dir, file)
+                    
+                    # Look for transcript files
+                    if file.endswith('.txt') and not file.endswith('_metadata.csv'):
+                        # Common transcript patterns
+                        if any(pattern in file.lower() for pattern in ['transkript', 'transcript', 'transcription']):
+                            transcript_files.append(file_path)
+                            print(f"DEBUG: Found transcript file: {file_path}")
+                        elif file == f"{os.path.splitext(base_filename)[0]}.txt":
+                            transcript_files.append(file_path)
+                            print(f"DEBUG: Found transcript file by name: {file_path}")
+                    
+                    # Look for prosody files
+                    if file.lower() in ['prosody_analysis.txt', 'prosody.txt', 'prosody_results.txt']:
+                        prosody_files.append(file_path)
+                        print(f"DEBUG: Found prosody file: {file_path}")
+            
+            # Use the first transcript and prosody files found
+            transcript_path = transcript_files[0] if transcript_files else None
+            prosody_path = prosody_files[0] if prosody_files else None
+            
+            print(f"DEBUG: Using transcript: {transcript_path}")
+            print(f"DEBUG: Using prosody: {prosody_path}")
             
             # Create metadata record
             record = self.extractor.create_metadata_record(
                 source_url=source_url,
                 html_content=html_content,
-                transcript_path=transcript_path if os.path.exists(transcript_path) else None,
-                prosody_path=prosody_path if os.path.exists(prosody_path) else None,
+                transcript_path=transcript_path,
+                prosody_path=prosody_path,
                 timestamp_start=timestamp_start,
                 timestamp_end=timestamp_end
             )
@@ -426,31 +452,7 @@ class MetadataProcessor:
                 
         except Exception as e:
             self.logger.error(f"Error processing video metadata: {e}")
+            print(f"DEBUG: Error in process_video_metadata: {e}")
+            import traceback
+            traceback.print_exc()
             return None
-    
-    def extract_metadata_from_files(self,
-                                   output_dir: str,
-                                   base_filename: str,
-                                   source_url: str = "",
-                                   timestamp_start: str = "",
-                                   timestamp_end: str = "") -> Optional[str]:
-        """
-        Extract metadata from existing files in output directory
-        
-        Args:
-            output_dir: Directory containing the files
-            base_filename: Base filename
-            source_url: Original source URL
-            timestamp_start: Start timestamp
-            timestamp_end: End timestamp
-            
-        Returns:
-            Path to created CSV file or None if failed
-        """
-        return self.process_video_metadata(
-            source_url=source_url,
-            output_dir=output_dir,
-            base_filename=base_filename,
-            timestamp_start=timestamp_start,
-            timestamp_end=timestamp_end
-        )
