@@ -14,3 +14,4 @@ selenium
 torch
 transformers
 webdriver-manager
+requests beautifulsoup4

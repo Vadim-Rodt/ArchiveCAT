@@ -26,6 +26,7 @@ from transcription_manager import TranscriptionManager
 from file_processor import FileProcessor
 from audio_video_splitter import split_video_audio
 from prosody_analyzer import ProsodyAnalyzer
+from metadata_extractor import MetadataProcessor
 
 from prosody_integration import (
     ProsodyIntegration, 
@@ -86,13 +87,14 @@ segment_entries = []
 
 def initialize_managers():
     """Initialisiert alle Manager-Klassen"""
-    global config_manager, video_processor, archive_downloader, transcription_manager, file_processor, prosody_integration
+    global config_manager, video_processor, archive_downloader, transcription_manager, file_processor, prosody_integration, metadata_processor
 
     config_manager = ConfigManager()
     video_processor = VideoProcessor()
     archive_downloader = ArchiveDownloader()
     transcription_manager = TranscriptionManager()
     prosody_integration = ProsodyIntegration()
+    metadata_processor = MetadataProcessor()
     
     download_dir = config_manager.get_download_dir()
     if download_dir:
