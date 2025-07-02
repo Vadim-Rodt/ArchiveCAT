@@ -5,6 +5,7 @@ Modul zur Verarbeitung lokaler Dateien und Verwaltung von Segmenten
 
 import os
 import shutil
+import re
 import json
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
@@ -40,7 +41,8 @@ class FileProcessor:
         try:
             # Extrahiere Dateiinfos
             filename = os.path.basename(file_path)
-            title_text = self._sanitize_filename(os.path.splitext(filename)[0])
+            original_title = os.path.splitext(filename)[0]
+            title_text = self._create_folder_name_from_filename(original_title)
             ext = os.path.splitext(filename)[1][1:]
             
             # Erstelle Hauptordner
@@ -236,6 +238,7 @@ class FileProcessor:
         name = re.sub(r'[\\/*?:"<>|]', '', name).strip()
         return name[:max_length]
     
+    
     def validate_segments(self, segment_times: List[Tuple[str, str]], 
                          video_duration: int) -> Tuple[bool, str]:
         """
@@ -263,3 +266,24 @@ class FileProcessor:
                     return False, f"Segment {i} überlappt mit Segment {j}"
         
         return True, ""
+    
+    def _create_folder_name_from_filename(self, filename: str) -> str:
+        """
+        Erstellt Ordnernamen aus Dateinamen (erste 20 Zeichen)
+        """
+        if not filename:
+            return "local_file"
+        
+        # Bereinige den Dateinamen
+        sanitized = re.sub(r'[\\/*?:"<>|]', '', filename)
+        sanitized = re.sub(r'[^\w\s-]', '', sanitized)
+        sanitized = re.sub(r'\s+', '_', sanitized)
+        sanitized = sanitized.strip('_-')
+        
+        # Nehme nur die ersten 20 Zeichen
+        folder_name = sanitized[:20]
+        
+        if not folder_name:
+            folder_name = "local_file"
+        
+        return folder_name

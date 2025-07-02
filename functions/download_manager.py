@@ -123,7 +123,7 @@ class ArchiveDownloader:
             title_element = wait.until(
                 EC.presence_of_element_located((By.CLASS_NAME, "item-title"))
             )
-            return self._sanitize_filename(title_element.text)
+            return title_element.text.strip()  # Return raw title, don't sanitize here
         except:
             return "archive_item"
     
@@ -195,6 +195,17 @@ class ArchiveDownloader:
             # Hole Video-Titel
             result['title'] = self.get_video_title(driver)
             
+            # NEUE LOGIK: Erstelle Ordnername aus ersten 20 Zeichen des Titels
+            if result['title']:
+                # Bereinige den Titel und nehme nur die ersten 20 Zeichen
+                folder_name = self._create_folder_name_from_title(result['title'])
+            else:
+                # Fallback wenn kein Titel gefunden
+                folder_name = "archive_item"
+            
+            print(f"DEBUG: Original title: '{result['title']}'")
+            print(f"DEBUG: Folder name: '{folder_name}'")
+            
             # Finde Video-Link
             if queue:
                 queue.put("status:Suche Video-Link...")
@@ -204,10 +215,10 @@ class ArchiveDownloader:
                 result['error'] = "Kein Video-Link gefunden"
                 return result
             
-            # Erstelle Ausgabepfad
+            # Erstelle Ausgabepfad mit neuem Ordnernamen
             ext = video_link.split('.')[-1]
-            filename = f"{result['title']}.{ext}"
-            video_folder = os.path.join(download_dir, result['title'])
+            filename = f"{folder_name}.{ext}"  # Verwende folder_name statt result['title']
+            video_folder = os.path.join(download_dir, folder_name)
             os.makedirs(video_folder, exist_ok=True)
             
             temp_filepath = os.path.join(video_folder, f"_temp_{filename}")
@@ -239,3 +250,19 @@ class ArchiveDownloader:
             driver.quit()
         
         return result
+    
+    def _create_folder_name_from_title(self, title: str) -> str:
+        """Creates folder name from first 20 characters of title"""
+        if not title or title.strip() == "":
+            return "archive_item"
+        
+        # Clean invalid characters
+        sanitized = re.sub(r'[\\/*?:"<>|]', '', title)
+        sanitized = re.sub(r'[^\w\s\-_.]', '', sanitized)
+        sanitized = re.sub(r'\s+', '_', sanitized)
+        sanitized = sanitized.strip('_-.')
+        
+        # Take only first 20 characters
+        folder_name = sanitized[:20]
+        
+        return folder_name if folder_name else "archive_item"
